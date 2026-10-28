@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+output/
+*.egg-info/
+.claude/
+
+# Local context files — not for git
+CLAUDE.md
+STATUS.md
+AGENTS.md
+.codex/
+
+SPEC.md
+BUILD.md
+# Agent scratch, deleted after use (see AGENTS.md).
+.work/
+
+# Project records, local only (as in the source pack).
+LUNA_MEDIA_LOADER.md
+plans/
+design/

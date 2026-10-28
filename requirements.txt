@@ -1,0 +1,5 @@
+# What the code in this pack needs beyond ComfyUI itself.
+# torch, av (PyAV), aiohttp, folder_paths and comfy_api come with ComfyUI.
+Pillow
+numpy
+# Luna-H3-LoopEnd's cut finder uses OpenCV (cv2), which ComfyUI's own requirements already install.
