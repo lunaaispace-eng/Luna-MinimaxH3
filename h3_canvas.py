@@ -2,7 +2,7 @@
 
 Ask for an aspect ratio and a duration in seconds; get back a canvas, a frame
 count, and the two frame rates. Replaces the usual pile of a generic resolution
-node plus hand-written maths expressions for length and fps.
+node plus hand-written maths expressions for frame count and fps.
 
 Why a dedicated node rather than a generic one: **H3 does not want a megapixel
 target.** Its canvas is fully determined by the aspect ratio — a fixed 768 short
@@ -193,8 +193,12 @@ class LunaMiniMaxH3Canvas(io.ComfyNode):
                 "edge down to /16 and `info` says so).\n\n"
                 "Frame count snaps up to H3's sampling grid, and `info` reports the duration "
                 "you actually got. Feed `output_fps` to the save node so interpolation and "
-                "playback rate can never disagree. `seconds` is the real duration (length / 24), "
-                "for nodes that think in seconds, such as Luna-H3-AssetLoader."
+                "playback rate can never disagree. `seconds` is the real duration (frames / 24), "
+                "for nodes that think in seconds, such as Luna-H3-AssetLoader.\n\n"
+                "Wire a picture into `image` (from Load Image or Luna-H3-ReferenceLoader) and the shape of "
+                "the frame follows that picture instead of `ratio` and `portrait`: the model's own "
+                "canvas and the megapixels mode use its exact aspect, preset mode uses the listed "
+                "ratio nearest to it, turned to the picture's orientation."
             ),
             inputs=[
                 # Named `ratio`, not `aspect_ratio`: the widget row shows name and value
@@ -251,11 +255,28 @@ class LunaMiniMaxH3Canvas(io.ComfyNode):
                             "node and output_fps, so they cannot drift. Keeps its value "
                             "while interpolation_enabled is false.",
                 ),
+                # Added LAST: saved workflows restore widget values by position, and a
+                # socket-only input adds none.
+                io.Image.Input(
+                    "image", optional=True,
+                    tooltip="Optional. Wired (from Load Image or Luna-H3-ReferenceLoader), the shape "
+                            "of the frame follows this picture instead of ratio and portrait: H3 "
+                            "canvas and megapixels use its exact aspect; preset uses the listed "
+                            "ratio nearest to it, turned to the picture's orientation. Only its "
+                            "first frame counts. Not from Luna-H3-AssetLoader while the loader takes "
+                            "this canvas's width, height or seconds: that is a circle ComfyUI refuses.",
+                ),
             ],
             outputs=[
                 io.Int.Output(display_name="width"),
                 io.Int.Output(display_name="height"),
-                io.Int.Output(display_name="length"),
+                # Was "length" until 2026-10-29. Renamed, same slot. V3 gives an output
+                # without an id the id "_{slot}_{type}_" (here "_2_INT_"), which does not
+                # use display_name, so saved links (by slot index) and the graph file are
+                # unaffected; only the label changes.
+                io.Int.Output(display_name="frames",
+                              tooltip="The frame count on H3's 17k+5 grid, at or above duration_seconds x 24. "
+                                      "For the H3 node's length and Luna-LLMPrompt's frames."),
                 io.Float.Output(display_name="fps"),
                 io.Float.Output(display_name="output_fps"),
                 io.Int.Output(display_name="interpolation_factor"),
@@ -263,7 +284,7 @@ class LunaMiniMaxH3Canvas(io.ComfyNode):
                 # Added LAST: saved workflows link outputs by slot number, so an
                 # appended output moves nothing.
                 io.Float.Output(display_name="seconds",
-                                tooltip="The real duration, length / 24: what the frame grid "
+                                tooltip="The real duration, frames / 24: what the frame grid "
                                         "gave, not what was asked (5 s -> 124 frames -> 5.1667 s). "
                                         "Wire it to Luna-H3-AssetLoader's seconds so the song window "
                                         "matches the shot."),
@@ -273,11 +294,30 @@ class LunaMiniMaxH3Canvas(io.ComfyNode):
     @classmethod
     def execute(cls, ratio, portrait, size_mode, megapixels,
                 duration_seconds, interpolation_enabled, interpolation_factor,
-                multiple="32", resolution=DEFAULT_PRESET):
+                multiple="32", resolution=DEFAULT_PRESET, image=None):
         w_ratio, h_ratio = ASPECT_RATIOS[ratio]
         if portrait:
             w_ratio, h_ratio = h_ratio, w_ratio
         aspect = w_ratio / h_ratio
+        ratio_text = f"{w_ratio}:{h_ratio}"
+
+        # A wired picture decides the shape: its exact aspect, first frame only. Preset
+        # sizes exist only for the listed ratios, so that mode takes the nearest listed one
+        # (landscape form, as ASPECT_RATIOS stores them) and turns it to the picture's side.
+        if image is not None:
+            img_h, img_w = int(image.shape[1]), int(image.shape[2])
+            aspect = img_w / img_h
+            portrait = aspect < 1.0
+            ratio_text = f"ratio from image {img_w}x{img_h}"
+            if size_mode == "preset":
+                landscape = max(aspect, 1.0 / aspect)
+                ratio = min(ASPECT_RATIOS, key=lambda k: abs(ASPECT_RATIOS[k][0] / ASPECT_RATIOS[k][1] - landscape))
+                labels = preset_labels(ratio, multiple)
+                if resolution not in labels:
+                    # The chosen size belongs to the widget's ratio; take this ratio's size
+                    # of the nearest area instead of refusing.
+                    cw, ch = _label_size(resolution)
+                    resolution = min(labels, key=lambda t: abs(_label_size(t)[0] * _label_size(t)[1] - cw * ch))
 
         if size_mode == "megapixels":
             width, height = megapixel_canvas(aspect, megapixels, int(multiple))
@@ -300,7 +340,7 @@ class LunaMiniMaxH3Canvas(io.ComfyNode):
 
         # ASCII only: this string is printed, and a Windows console on cp1252
         # raises UnicodeEncodeError on the likes of a middle dot or an arrow.
-        info = (f"{width}x{height} ({w_ratio}:{h_ratio}) | {width * height / 1e6:.2f} MP | "
+        info = (f"{width}x{height} ({ratio_text}) | {width * height / 1e6:.2f} MP | "
                 f"{length} frames | {actual_seconds:.2f}s @ {FPS:g} fps")
         if factor > 1:
             info += f" -> x{factor} -> {output_fps:g} fps out"

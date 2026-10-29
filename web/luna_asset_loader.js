@@ -391,18 +391,6 @@ function h3Tags(node) {
     return out;
 }
 
-// How many frames the continuation takes: the song's overlap when the song is
-// cut by shot number (sound and picture then overlap by the same amount), else
-// its own count. Shot 1 has nothing before it.
-function contFrames(m, wiredShotNo = null) {
-    const c = m.continuation || {}, song = m.audio[0];
-    const byShot = song?.position === "shot";
-    const shotNo = wiredShotNo > 0 ? wiredShotNo : (Number(song?.shot) || 1);   // a wired shot wins, as in Python
-    if (byShot && shotNo === 1) return { frames: 0, shot1: true, fromSong: true };
-    if (c.take === "last") return { frames: 1, shot1: false, fromSong: false };
-    return { frames: byShot ? Number(song.overlap ?? 22) : Number(c.frames) || 22, shot1: false, fromSong: byShot };
-}
-
 /* -------------------------------------------------------------- ⚙ panel */
 
 // The settings panel, after LLM Prompt's (llm_prompt_panel.mjs, itself after
@@ -577,10 +565,9 @@ function readMedia(node) {
             video: Array.isArray(m.video) ? m.video.filter((c) => c && c.file) : [],
             pictures: Array.isArray(m.pictures) ? m.pictures.map((p) => p || {}) : [],
             shot: m.shot && Number(m.shot.frames) > 0 ? { frames: Number(m.shot.frames) } : null,
-            continuation: m.continuation && typeof m.continuation === "object" ? m.continuation : null,
             settings: m.settings && typeof m.settings === "object" ? m.settings : {},
         };
-    } catch { return { audio: [], video: [], pictures: [], shot: null, continuation: null, settings: {} }; }
+    } catch { return { audio: [], video: [], pictures: [], shot: null, settings: {} }; }
 }
 
 /* ---------------------------------------------------------------- settings */
@@ -621,7 +608,6 @@ function stepGrid(n, dir, grid) {
     if (grid === "ltx") return Math.max(1, gridFrames(n, "ltx") + 8 * dir);
     return Math.max(1, Math.round(n) + dir);
 }
-const NEW_CONT = { on: true, from: "folder", folder: "", file: "", take: "frames", frames: 22 };
 
 function writeMedia(node, m) {
     const w = widget(node, MEDIA_WIDGET);
@@ -632,7 +618,7 @@ function writeMedia(node, m) {
     // Picture roles only matter once one of them is not a plain reference.
     if (m.pictures?.some((p) => p?.role === "key")) out.pictures = m.pictures;
     if (m.shot?.frames) out.shot = m.shot;
-    if (m.continuation) out.continuation = m.continuation;   // kept while off, so settings survive a toggle
+    // A "continuation" key from an older save is dropped here: the card is gone and the backend ignores it.
     if (m.settings && Object.keys(m.settings).length) out.settings = m.settings;
     w.value = Object.keys(out).length ? JSON.stringify(out) : "";
     w.callback?.(w.value);
@@ -841,34 +827,51 @@ async function uploadFiles(files) {
 
 /* --------------------------------------------------------------- outputs */
 
-// The seven fixed outputs (images, width, height, asset_brief, audio, refs,
-// timeline) occupy slots 0-6 and are never touched. Only the trailing image_N
-// slots grow and shrink.
+// The nine fixed outputs (images, width, height, asset_brief, audio, refs,
+// timeline, video, frames) occupy slots 0-8 and are never touched. Only the
+// trailing image_N slots grow and shrink.
 //
 // `slot.hidden` does NOT work: setting it leaves the flag on the object but the
 // frontend (1.48.x) still draws every output. Verified in the browser, which is
 // why this adds and removes real slots instead.
-const FIXED = 7;
-const NEW_OUTS = [["audio", "AUDIO"], ["refs", "LUNA_H3_REFS"], ["timeline", "LUNA_TIMELINE"]];
+const FIXED_OUTS = [["images", "IMAGE"], ["width", "INT"], ["height", "INT"], ["asset_brief", "STRING"],
+                    ["audio", "AUDIO"], ["refs", "LUNA_H3_REFS"], ["timeline", "LUNA_TIMELINE"],
+                    ["video", "IMAGE"], ["frames", "INT"]];
+const FIXED = FIXED_OUTS.length;
 
-// Workflows saved before audio/refs/timeline existed have image_1 at slot 4.
+// The migration is one rule, not one step per release: a saved node keeps the
+// fixed outputs it was saved with (everything before its image_1) and gets every
+// fixed output it lacks inserted before image_1, at that output's own index in
+// FIXED_OUTS. image_1 then sits at FIXED whatever the save: old saves (4 fixed,
+// image_1 at slot 4) and v3 saves (7 fixed, image_1 at slot 7) both end with
+// image_1 at slot 9; a node that already has all nine is left alone. Every link
+// leaving image_1 or higher is moved by the number of slots inserted. The saved
+// fixed outputs are a prefix of FIXED_OUTS, so they keep their numbers.
+const savedFixedCount = (outputs) => {
+    const k = Array.isArray(outputs) ? outputs.findIndex((o) => o?.name === "image_1") : -1;
+    return k >= 0 && k < FIXED ? k : -1;
+};
+
 // Frontend 1.55.17 overwrites a saved node's output names BY POSITION from the
 // current definition and keeps every link on its slot number, so left alone an
-// old image_1 wire lands on `audio` without a word (seen in the S0 spike,
-// 2026-10-16). onConfigure is too late for that; this rewrites the raw workflow
-// JSON before the graph is configured: the three new slots go in at 4 and every
-// link leaving slot 4 or higher of an old Luna-H3-AssetLoader moves up by three. Root
-// graph and subgraph definitions alike. A migrated save has "audio" at slot 4, so
-// it is never moved twice.
+// old image_1 wire lands on `audio` (or `video`) without a word (seen in the S0
+// spike, 2026-10-16). onConfigure is too late for that; this rewrites the raw
+// workflow JSON before the graph is configured: the missing fixed slots go in
+// before image_1 and every link leaving image_1 or higher of an old
+// Luna-H3-AssetLoader moves up by the number inserted. Root graph and subgraph
+// definitions alike. A migrated save has image_1 at slot 9, so it is never moved twice.
 function migrateWorkflowJSON(data) {
     const moved = [];
     const fixGraph = (g, where) => {
         if (!Array.isArray(g?.nodes)) return;
-        const old = new Set();
+        const old = new Map();   // node id -> [first moved slot, slots inserted]
         for (const n of g.nodes) {
-            if (n?.type !== NODE || !Array.isArray(n.outputs) || n.outputs[4]?.name !== "image_1") continue;
-            old.add(n.id);
-            n.outputs.splice(4, 0, ...NEW_OUTS.map(([name, type]) => ({ name, localized_name: name, type, links: null })));
+            if (n?.type !== NODE) continue;
+            const k = savedFixedCount(n.outputs);
+            if (k < 0) continue;
+            const missing = FIXED_OUTS.slice(k);
+            old.set(n.id, [k, missing.length]);
+            n.outputs.splice(k, 0, ...missing.map(([name, type]) => ({ name, localized_name: name, type, links: null })));
         }
         if (!old.size) return;
         // Floating links (a wire dragged to a reroute with nothing after it) carry an
@@ -878,9 +881,10 @@ function migrateWorkflowJSON(data) {
             // graph; {id, origin_id, origin_slot, ...} inside subgraph definitions.
             const arr = Array.isArray(l);
             const oid = arr ? l[1] : l?.origin_id, os = arr ? l[2] : l?.origin_slot;
-            if (!old.has(oid) || !(os >= 4)) continue;
-            if (arr) l[2] = os + NEW_OUTS.length; else l.origin_slot = os + NEW_OUTS.length;
-            moved.push(`${where} link ${arr ? l[0] : l.id}: slot ${os} -> ${os + NEW_OUTS.length}`);
+            const mv = old.get(oid);
+            if (!mv || !(os >= mv[0])) continue;
+            if (arr) l[2] = os + mv[1]; else l.origin_slot = os + mv[1];
+            moved.push(`${where} link ${arr ? l[0] : l.id}: slot ${os} -> ${os + mv[1]}`);
         }
     };
     fixGraph(data, "root");
@@ -911,21 +915,22 @@ function patchDeserialize() {
 
 // Paste and subgraph-blueprint insertion never call loadGraphData, so the JSON
 // migration above never sees them (review, 2026-10-16). Such a node is configured
-// from its old serialized form — outputs[4] still "image_1" in `info` — and its
-// links are made right after. So: once they exist, move every link leaving slot 4
-// or higher up by three, on the live graph. A node from a migrated save has
-// "audio" at slot 4 in `info` and is left alone.
-function migrateLiveNode(node) {
+// from its old serialized form — `from` is where image_1 sat in `info` — and its
+// links are made right after. So: once they exist, move every link leaving slot
+// `from` or higher up by FIXED - from, on the live graph. A node from a migrated
+// save has image_1 at FIXED in `info` and is left alone.
+function migrateLiveNode(node, from) {
     const g = node.graph;
-    if (!g || !node.outputs) return 0;
+    if (!g || !node.outputs || !(from >= 0 && from < FIXED)) return 0;
+    const shift = FIXED - from;
     const getLink = (id) => g.getLink?.(id) ?? g.links?.get?.(id) ?? g.links?.[id];
     const moves = [];
     node.outputs.forEach((o, i) => {
-        if (i < 4) return;
+        if (i < from) return;
         for (const id of o.links || []) { const l = getLink(id); if (l && l.origin_id === node.id) moves.push([i, id, l]); }
     });
     if (!moves.length) return 0;
-    const need = Math.max(...moves.map(([i]) => i)) + NEW_OUTS.length;
+    const need = Math.max(...moves.map(([i]) => i)) + shift;
     const cw = widget(node, COUNT_WIDGET);
     if (cw && node.outputs.length <= need) {
         cw.value = Math.min(MAX, Math.max(Number(cw.value) || 1, need - FIXED + 1));
@@ -933,7 +938,7 @@ function migrateLiveNode(node) {
     }
     for (const [i] of moves) node.outputs[i].links = [];
     for (const [i, id, l] of moves) {
-        const to = i + NEW_OUTS.length;
+        const to = i + shift;
         l.origin_slot = to;
         const out = node.outputs[to];
         if (out) (out.links = out.links || []).push(id);
@@ -1146,11 +1151,6 @@ function buildUI(node) {
     tl.className = "luna-al-tl";
     tl.style.display = "none";
     for (const ev of ["pointerdown", "keydown", "wheel"]) tl.addEventListener(ev, (e) => e.stopPropagation());
-    // The continuation editor.
-    const ced = document.createElement("div");
-    ced.className = "luna-al-ved";
-    ced.style.display = "none";
-    for (const ev of ["pointerdown", "keydown", "wheel"]) ced.addEventListener(ev, (e) => e.stopPropagation());
     // Three rows, one per kind (Peter, 2026-10-16: "different timelines for image,
     // video and audio" — chose "Three rows"): each with its own + add, its own
     // cards, and its editor opening right under it. The shot timeline sits below.
@@ -1183,19 +1183,17 @@ function buildUI(node) {
     };
     root.append(bar,
         section("p", "Pictures", cards, [preview, panel]),
-        section("v", "Clips", vcards, [ved, ced]),
+        section("v", "Clips", vcards, [ved]),
         section("a", "Sounds", acards, [aed]),
         tl);
 
     let selected = 0;                 // which card the resize panel edits
     let selAudio = -1;                // which sound card the song editor edits; -1 = none
     let selVideo = -1;                // which video card the clip editor edits; -1 = none
-    let selCont = false;              // the continuation editor is open
     // One editor at a time: picking a card of one kind clears the others.
     const pick = (kind, i) => {
         selAudio = kind === "a" ? i : -1;
         selVideo = kind === "v" ? i : -1;
-        selCont = kind === "c";
         if (kind === "p") selected = i;
         render();
     };
@@ -1263,16 +1261,6 @@ function buildUI(node) {
     // ⚙ — node-wide settings: target workflow, new-clip defaults, memory cap, sound, node.
     const gearBtn = mkBtn("⚙", "", () => openSettings(node));
     gearBtn.title = "Settings: target workflow (H3 / LTX / General), new-clip defaults, memory cap, nudge step, preview height";
-    // The continuation: the end of the previous shot opens this one.
-    const contBtn = mkBtn("↺ Continue", "", () => {
-        const m = readMedia(node);
-        const on = !(m.continuation?.on);
-        m.continuation = { ...NEW_CONT, ...(m.continuation || {}), on };
-        writeMedia(node, m);
-        if (on) { selCont = true; selAudio = -1; selVideo = -1; } else selCont = false;
-        render();
-    });
-    contBtn.title = "Open this shot with the end of the previous one, so the motion carries on across the cut";
     const fieldsBtn = mkBtn("Fields", "", () => {
         fieldsShown = !fieldsShown;
         setFieldsVisible(fieldsShown);
@@ -1349,7 +1337,7 @@ function buildUI(node) {
         acards.replaceChildren();
         counter.textContent = "";
         heads.p.textContent = `${paths.length} / ${MAX}`;
-        heads.v.textContent = `${media.video.length} / ${MAX_VIDEOS}` + (media.continuation?.on ? " · ↺" : "");
+        heads.v.textContent = `${media.video.length} / ${MAX_VIDEOS}`;
         heads.a.textContent = `${media.audio.length} / ${MAX_SOUNDS}`;
 
         // No early return on an empty row: renderPreview/renderPanel handle "nothing
@@ -1361,7 +1349,7 @@ function buildUI(node) {
             grid.appendChild(e);
         };
         if (!paths.length) empty(cards, "No pictures. + add, or type file names in image_paths (Fields).");
-        if (!media.video.length && !media.continuation?.on) empty(vcards, "No clips. + add a video, or ↺ Continue from the previous shot.");
+        if (!media.video.length) empty(vcards, "No clips. + add a video.");
         if (!media.audio.length) empty(acards, "No sounds. + add a song — sound 1 drives the shot.");
         if (paths.length > MAX) {
             const warn = document.createElement("div");
@@ -1372,7 +1360,7 @@ function buildUI(node) {
 
         paths.forEach((name, i) => {
             const card = document.createElement("div");
-            card.className = "luna-al-card" + (i === selected && selAudio < 0 && selVideo < 0 && !selCont ? " sel" : "");
+            card.className = "luna-al-card" + (i === selected && selAudio < 0 && selVideo < 0 ? " sel" : "");
             card.draggable = true;
             // Selecting is what makes a nine-image node editable: the resize panel
             // below edits whichever card is selected, so REF2VA references can stay
@@ -1456,30 +1444,6 @@ function buildUI(node) {
             card.append(img, pic, x, cap);
             cards.appendChild(card);
         });
-
-        // The continuation card comes first: it opens the shot.
-        if (media.continuation?.on) {
-            const card = document.createElement("div");
-            card.className = "luna-al-card" + (selCont ? " sel" : "");
-            card.style.cursor = "pointer";
-            card.title = "Continuation — the end of the previous shot opens this one";
-            card.onclick = () => pick("c", 0);
-            const face = document.createElement("div");
-            face.className = "luna-al-vthumb";
-            face.style.cssText = "display:flex;align-items:center;justify-content:center;font-size:30px;color:#fff9;background:repeating-linear-gradient(45deg,#3a2a40 0 8px,#2c2131 8px 16px)";
-            face.textContent = "↺";
-            const pic = document.createElement("div");
-            pic.className = "luna-al-pic vid";
-            pic.textContent = "↺";
-            const cap = document.createElement("div");
-            cap.className = "luna-al-cap";
-            const c = media.continuation;
-            const n = contFrames(media, wiredShot().value);
-            cap.innerHTML = `<div class="luna-al-dim">${n.shot1 ? "shot 1: none" : c.take === "last" ? "last frame" : `last ${n.frames} frames`}</div><div class="luna-al-name"></div>`;
-            cap.querySelector(".luna-al-name").textContent = c.from === "input" ? "previous_frames input" : c.from === "file" ? (c.file || "pick a file") : `newest in output/${c.folder || ""}`;
-            card.append(face, pic, cap);
-            vcards.appendChild(card);
-        }
 
         // Video cards after the pictures: V1-V3, MiniMax H3's <Video k> in this order.
         media.video.forEach((c, i) => {
@@ -1573,7 +1537,6 @@ function buildUI(node) {
         renderPanel();
         renderAudio();
         renderVideo();
-        renderContinuation();
 
         // The widget's getHeight depends on how many cards there are, so a redraw
         // has to follow any change to the list or the node keeps its old height.
@@ -1582,7 +1545,7 @@ function buildUI(node) {
 
     function renderPreview() {
         const paths = readPaths(node);
-        if (selAudio >= 0 || selVideo >= 0 || selCont) { preview.style.display = "none"; return; }
+        if (selAudio >= 0 || selVideo >= 0) { preview.style.display = "none"; return; }
         if (!paths.length) {
             // Drop the picture as well as hiding the box: leaving the src set kept
             // the removed image decoded, and the dataset guard below would then
@@ -1614,8 +1577,8 @@ function buildUI(node) {
 
     function renderPanel() {
         panel.replaceChildren();
-        panel.style.display = selAudio >= 0 || selVideo >= 0 || selCont ? "none" : "";
-        if (selAudio >= 0 || selVideo >= 0 || selCont) return;
+        panel.style.display = selAudio >= 0 || selVideo >= 0 ? "none" : "";
+        if (selAudio >= 0 || selVideo >= 0) return;
         const paths = readPaths(node);
         if (!paths.length) return;
         if (selected >= paths.length) selected = 0;
@@ -1854,17 +1817,6 @@ function buildUI(node) {
         };
 
         const tp = q('[data-k="p"]'), tv = q('[data-k="v"]'), ta = q('[data-k="a"]'), refs = q(".luna-al-refs");
-        // The continuation always opens the shot: drawn, not draggable.
-        const cf = m.continuation?.on ? contFrames(m, wiredShot().value) : null;
-        if (cf && !cf.shot1) {
-            const el = document.createElement("div");
-            el.className = "luna-al-blk vid" + (selCont ? " sel" : "");
-            el.style.cssText = `left:0;width:${Math.max(0.8, cf.frames / S * 100)}%;background:repeating-linear-gradient(45deg,#b07a8a 0 6px,#9a6878 6px 12px);cursor:pointer`;
-            el.textContent = `↺ 0–${cf.frames - 1}`;
-            el.title = "The continuation: the end of the previous shot";
-            el.onclick = () => pick("c", 0);
-            tv.appendChild(el);
-        }
         const chip = (cls, text, kind, i, title) => {
             const c = document.createElement("span");
             c.className = `luna-al-chip ${cls}`;
@@ -2323,77 +2275,6 @@ function buildUI(node) {
         };
     }
 
-    /* ------------------------------------------------- continuation editor */
-
-    function renderContinuation() {
-        const m = readMedia(node);
-        if (!selCont || !m.continuation?.on) {
-            selCont = selCont && !!m.continuation?.on;
-            ced.style.display = "none";
-            ced.replaceChildren();
-            return;
-        }
-        ced.style.display = "";
-        const c = { ...NEW_CONT, ...m.continuation }, n = contFrames(m, wiredShot().value);
-        ced.innerHTML = `
-            <div class="luna-al-ahead"><b>↺ Continuation</b><span>the end of the previous shot opens this one</span><span class="sp"></span>
-              <div class="luna-al-play off" title="Turn the continuation off">Off</div></div>
-            <div class="luna-al-strip cstrip" style="height:40px"></div>
-            <div class="luna-al-zlbl"><span class="cwhat">…</span><span class="cfr"></span></div>
-            <div class="luna-al-row"><div class="luna-al-lbl">Take</div><div class="luna-al-seg take"></div></div>
-            <div class="luna-al-row frow"><div class="luna-al-lbl">Frames</div><div class="luna-al-seg frs"></div></div>
-            <div class="luna-al-row"><div class="luna-al-lbl">From</div><div class="luna-al-seg from"></div></div>
-            <div class="luna-al-row frow2"><div class="luna-al-lbl src"></div><div class="luna-al-nf"><input class="cin" style="width:220px"></div></div>
-            <div class="luna-al-astat"></div>`;
-        const $ = (s) => ced.querySelector(s);
-        const set = (patch) => { const mm = readMedia(node); mm.continuation = { ...c, ...patch }; writeMedia(node, mm); render(); };
-        const seg = (host, opts, cur, f) => {
-            host.replaceChildren();
-            for (const [val, text] of opts) {
-                const o = document.createElement("div");
-                o.className = "luna-al-opt" + (String(val) === String(cur) ? " on" : "");
-                o.textContent = text;
-                o.onclick = () => f(val);
-                host.appendChild(o);
-            }
-        };
-        $(".off").onclick = () => set({ on: false });
-        seg($(".take"), [["frames", "Last frames (a clip)"], ["last", "Last frame (a picture)"]], c.take, (v) => set({ take: v }));
-        if (n.fromSong || c.take === "last") {
-            $(".frs").innerHTML = `<span class="luna-al-lock">${c.take === "last" ? "1 frame" : `= the song's overlap, ${Number(m.audio[0]?.overlap ?? 22)} frames`}</span>`;
-        } else seg($(".frs"), [[5, "5"], [22, "22"], [39, "39"]], c.frames, (v) => set({ frames: v }));
-        seg($(".from"), [["folder", "Newest in an output folder"], ["file", "A file"], ["input", "previous_frames input"]], c.from, (v) => set({ from: v }));
-        const inp = $(".cin");
-        if (c.from === "input") $(".frow2").style.display = "none";
-        $(".src").textContent = c.from === "folder" ? "Folder" : "File";
-        inp.placeholder = c.from === "folder" ? "e.g. music_video  (empty = the output folder)" : "a video in the input folder";
-        inp.value = c.from === "folder" ? c.folder : c.file;
-        inp.onchange = () => set(c.from === "folder" ? { folder: inp.value.trim() } : { file: inp.value.trim() });
-        inp.addEventListener("keydown", (e) => { if (e.key === "Enter") inp.blur(); });
-
-        const describe = (name) => {
-            const k = n.frames;
-            $(".cwhat").textContent = name ? `from ${name}` : "no video found yet";
-            $(".cfr").textContent = n.shot1 ? "" : k === 1 ? "frame 0" : `frames 0–${k - 1} of this shot`;
-            let msg = n.shot1
-                ? "This is <b>shot 1</b>: nothing comes before it, so the continuation is skipped."
-                : `Frames <b>0–${k - 1}</b> of this shot are guided by the last ${k === 1 ? "frame" : `${k} frames`} of the previous shot, so the motion carries on across the cut.`;
-            if (n.fromSong && !n.shot1) msg += ` The song windows overlap by the same ${(k / H3_FPS).toFixed(2)} s, so sound and picture line up.`;
-            if (c.from === "folder") msg += `<br>Takes whatever video was written last into <b>output/${(c.folder || "").replace(/[<>&]/g, "")}</b> — point your save node there.`;
-            if (c.from === "input") msg += `<br>Wire the previous shot's frames into <b>previous_frames</b>.`;
-            $(".luna-al-astat").innerHTML = msg;
-            if (name && c.from !== "input") $(".cstrip").style.backgroundImage = "";
-        };
-        if (c.from === "folder") {
-            fetch(`/lunasave/newest-video?folder=${encodeURIComponent(c.folder || "")}`)
-                .then((r) => r.json()).then((j) => describe(j.name ? `${j.name}${j.duration ? ` (${j.duration.toFixed(2)} s)` : ""}` : null))
-                .catch(() => describe(null));
-        } else if (c.from === "file" && c.file) {
-            $(".cstrip").style.backgroundImage = `url("${stripURL(c.file, 12)}")`;
-            describe(c.file);
-        } else describe(c.from === "input" ? "the previous_frames input" : null);
-    }
-
     /* --------------------------------------------------------- clip editor */
 
     function renderVideo() {
@@ -2615,8 +2496,7 @@ function buildUI(node) {
 
     return { root, render, selectCard: (i) => { selected = i; renderPanel(); }, natural,
              audioOpen: () => selAudio >= 0, audioExtraRows,
-             videoOpen: () => selVideo >= 0, videoHeight, timelineHeight,
-             contOpen: () => selCont && !!readMedia(node).continuation?.on };
+             videoOpen: () => selVideo >= 0, videoHeight, timelineHeight };
 }
 
 /* ---------------------------------------------------------------- register */
@@ -2626,7 +2506,7 @@ app.registerExtension({
     setup() { patchDeserialize(); },
     beforeConfigureGraph(graphData) {
         const moved = migrateWorkflowJSON(graphData);
-        if (moved.length) console.info("[Luna-H3-AssetLoader] updated a workflow saved before the audio/refs/timeline outputs:", moved);
+        if (moved.length) console.info("[Luna-H3-AssetLoader] updated a workflow saved before the current fixed outputs:", moved);
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE) return;
@@ -2656,7 +2536,7 @@ app.registerExtension({
             const SEC = 7 + 21 + 6;        // row border + padding, heading, gap to the cards
             // AUDIO_BASE: song editor without its Position/Role/At-frame rows, measured 276 after the zoom
             // tools replaced the strip (2026-10-16), + 16 kept for the overview bar shown when zoomed.
-            const EMPTY = 26, PANEL = 125, AUDIO_BASE = 292, VIDEO_BASE = 598, CONT = 250, TIMELINE = 194;
+            const EMPTY = 26, PANEL = 125, AUDIO_BASE = 292, VIDEO_BASE = 598, TIMELINE = 194;
             const gridH = (n) => {
                 if (!n) return EMPTY;
                 const gw = Math.max(CARD_MIN, this.size[0] - GRID_SIDE);
@@ -2668,12 +2548,11 @@ app.registerExtension({
             const cardsHeight = () => {
                 const list = readPaths(this);
                 const md = readMedia(this);
-                const rowsH = 3 * SEC + gridH(list.length) + gridH(md.video.length + (md.continuation?.on ? 1 : 0))
+                const rowsH = 3 * SEC + gridH(list.length) + gridH(md.video.length)
                             + gridH(md.audio.length);
                 const tlh = ui.timelineHeight() ? TIMELINE : 0;
                 let editor = 0;
-                if (ui.contOpen()) editor = 6 + CONT;
-                else if (ui.videoOpen()) editor = 6 + VIDEO_BASE + (ui.videoHeight() - 572);   // + Role, + At frame
+                if (ui.videoOpen()) editor = 6 + VIDEO_BASE + (ui.videoHeight() - 572);   // + Role, + At frame
                 else if (ui.audioOpen()) editor = 6 + AUDIO_BASE + ui.audioExtraRows() * 28;   // Position, Shot + Overlap, Role, At frame
                 else if (list.length) {
                     // The picture preview and its resize panel, which grows a row when a
@@ -2742,12 +2621,17 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
             const r = onConfigure?.apply(this, arguments);
-            if (info?.outputs?.[4]?.name === "image_1") {
+            const savedFixed = savedFixedCount(info?.outputs);
+            if (savedFixed >= 0) {
                 setTimeout(() => {
-                    const n = migrateLiveNode(this);
-                    if (n) console.info(`[Luna-H3-AssetLoader] moved ${n} wire(s) of a pasted pre-v3 node up by three slots.`);
+                    const n = migrateLiveNode(this, savedFixed);
+                    if (n) console.info(`[Luna-H3-AssetLoader] moved ${n} wire(s) of a pasted older node up by ${FIXED - savedFixed} slots.`);
                 }, 0);
             }
+            // A saved node keeps its saved input list, so the removed `previous_frames` socket
+            // (the Continuation card, gone 2026-10-29) would still show. Drop it, wire and all.
+            const stale = this.inputs?.findIndex((i) => i.name === "previous_frames") ?? -1;
+            if (stale >= 0) this.removeInput(stale);
             requestAnimationFrame(() => { applyCount(this); this._lunaRender?.(); });
             return r;
         };

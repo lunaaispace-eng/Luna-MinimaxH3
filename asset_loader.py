@@ -42,12 +42,28 @@ shot uses: start, duration, and what to do when the window runs off the end
 `audio`, exactly as long as asked — when the `seconds` input is wired, that is the
 duration, so the song always matches the shot length. Window maths: media_io.
 
-Outputs `audio`, `refs` and `timeline` sit at slots 4-6, BEFORE image_N. The
-frontend shrinks the node by removing trailing image_N slots, and ComfyUI maps an
-output to the returned tuple by index, so nothing may sit after the image block.
-Workflows saved before these three existed are migrated in the frontend before
-the graph is configured (js/luna_asset_loader.js, migrateWorkflowJSON) — see the
-2026-10-16 decision in STATUS for why it cannot happen later.
+Outputs `audio`, `refs`, `timeline`, `video` and `frames` sit at slots 4-8, BEFORE
+image_N. The frontend shrinks the node by removing trailing image_N slots, and
+ComfyUI maps an output to the returned tuple by index, so nothing may sit after
+the image block. Workflows saved before these five existed are migrated in the
+frontend before the graph is configured (js/luna_asset_loader.js,
+migrateWorkflowJSON) — see the 2026-10-16 decision in STATUS for why it cannot
+happen later.
+
+  video   the decoded frames of clip card V1 (whatever its role), for prompt writers
+  frames  the shot length in frames, for the generation node's length and a prompt
+          writer's frame count
+
+Width and height: when the canvas size is wired (width AND height), those are
+passed on, so the loader and the canvas can never disagree; picture 1's size only
+when nothing is wired. An empty loader is not an error: it hands on empty outputs
+and a brief that says "Nothing loaded.", so a graph can run before cards are added.
+
+No continuation (removed 2026-10-29). Motion context is the previous render's
+latent, copied into the new render's first frames and locked; it lives in the loop.
+The old card decoded the previous video's pixels and placed them as a guide, which
+is a different thing. An old media_state that still has a "continuation" key is read
+and the key ignored.
 """
 
 from __future__ import annotations
@@ -65,8 +81,8 @@ import folder_paths
 import node_helpers
 
 from .asset_images import apply_state, conform, to_rgb
-from .asset_timeline import (check_placements, h3_tags, newest_video, normalize_sound_role, shot_frames,
-                             tail_start, target_fps, target_grid, thinning_error)
+from .asset_timeline import (check_placements, h3_tags, normalize_sound_role, shot_frames,
+                             target_fps, target_grid, thinning_error)
 from .media_io import (FPS, clip_bytes, clip_soundtrack, decode_clip, filmstrip_jpeg, grid_frames, strip_annotation,
                        load_audio, load_audio_window, probe_media, song_shot_count, song_shot_start)
 
@@ -210,16 +226,6 @@ def _parse_media(raw: str) -> dict:
         p = p if isinstance(p, dict) else {}
         pics.append({"role": "key" if p.get("role") == "key" else "ref", "at": max(0, int(p.get("at") or 0))})
     shot = data.get("shot") if isinstance(data.get("shot"), dict) else {}
-    # The continuation: the end of the previous shot, anchored at frame 0 of this one.
-    c = data.get("continuation") if isinstance(data.get("continuation"), dict) else {}
-    cont = {
-        "on": bool(c.get("on")),
-        "from": c.get("from") if c.get("from") in ("folder", "file", "input") else "folder",
-        "folder": str(c.get("folder") or ""),
-        "file": str(c.get("file") or ""),
-        "take": "last" if c.get("take") == "last" else "frames",
-        "frames": max(1, int(c.get("frames") or 22)),
-    }
     # Node-wide settings from the ⚙ panel.
     st = data.get("settings") if isinstance(data.get("settings"), dict) else {}
     settings = {
@@ -227,7 +233,7 @@ def _parse_media(raw: str) -> dict:
         "memory_gb": min(64.0, max(1.0, float(st.get("memory_gb") or MEMORY_CAP / 1024 ** 3))),
     }
     return {"audio": cards, "video": clips, "pictures": pics,
-            "shot_frames": max(1, int(shot.get("frames") or 124)), "continuation": cont, "settings": settings}
+            "shot_frames": max(1, int(shot.get("frames") or 124)), "settings": settings}
 
 
 def _clock(t: float) -> str:
@@ -275,7 +281,10 @@ class LunaAssetLoader:
         "Upload a sound file and it becomes a sound card. Select it to see the whole song: "
         "drag the window to choose the part the shot uses, drag its edges or type Start and "
         "Duration. Wire `seconds` (for example from the canvas node) and the duration is "
-        "locked to the shot length; only the start moves. `audio` delivers exactly that window."
+        "locked to the shot length; only the start moves. `audio` delivers exactly that window.\n\n"
+        "`video` is the frames of the first clip card and `frames` the shot length in frames, for "
+        "Luna-LLMPrompt. Wire the canvas width and height and they pass straight through; unwired, "
+        "picture 1's size is given. An empty loader runs and delivers nothing."
     )
     CATEGORY = "Luna-MinimaxH3"
     FUNCTION = "load"
@@ -284,13 +293,12 @@ class LunaAssetLoader:
     # slots to shrink the node, and ComfyUI maps outputs to the returned tuple by
     # INDEX — so anything that must keep its meaning has to sit at an index that
     # never moves. With image_N first, dropping image_3 would silently hand
-    # image_3's tensor to `images`. audio/refs/timeline (v3) are fixed too, so they
-    # sit at 4-6; old saves are moved up by the frontend migration.
-    RETURN_TYPES = ("IMAGE", "INT", "INT", "STRING", "AUDIO", "LUNA_H3_REFS", "LUNA_TIMELINE") \
+    # image_3's tensor to `images`. audio/refs/timeline (v3) and video/frames (v4) are
+    # fixed too, so they sit at 4-8; old saves are moved up by the frontend migration.
+    RETURN_TYPES = ("IMAGE", "INT", "INT", "STRING", "AUDIO", "LUNA_H3_REFS", "LUNA_TIMELINE", "IMAGE", "INT") \
         + ("IMAGE",) * MAX_IMAGES
-    RETURN_NAMES = ("images", "width", "height", "asset_brief", "audio", "refs", "timeline") + tuple(
-        f"image_{i + 1}" for i in range(MAX_IMAGES)
-    )
+    RETURN_NAMES = ("images", "width", "height", "asset_brief", "audio", "refs", "timeline", "video",
+                    "frames") + tuple(f"image_{i + 1}" for i in range(MAX_IMAGES))
     # ComfyUI shows these when you hover an output socket, and the ⓘ panel lists
     # them too — one definition, both places, so they cannot disagree.
     OUTPUT_TOOLTIPS = (
@@ -298,8 +306,11 @@ class LunaAssetLoader:
         "black bars (never stretched), because a batch cannot hold mixed dimensions. For prompt writers "
         "(Luna Agent Chat, LLM Prompt) which flatten it to individual JPEGs anyway. Empty when only "
         "clips or sounds are loaded.",
-        "Image 1's width AFTER its resize, for driving the generation nodes. With no pictures loaded: the wired width, else 0.",
-        "Image 1's height AFTER its resize. With no pictures loaded: the wired height, else 0.",
+        "The width to generate at. With the width AND height inputs wired (the canvas size) it is "
+        "that width, so the loader and the canvas never disagree; unwired it is image 1's width AFTER "
+        "its resize; with no pictures either, 0.",
+        "The height to generate at. Same rule as width: the wired canvas height, else image 1's height "
+        "AFTER its resize, else 0.",
         "A one-line inventory — '<Picture 1> = 1920x1056 (20:11, landscape); ...' — "
         "plus a warning when pictures 1 and 2 differ in aspect ratio, which FL2VA "
         "silently fixes by stretching the first frame and cropping the last. "
@@ -309,8 +320,12 @@ class LunaAssetLoader:
         "the same sound, or to an audio-sync node to make the picture follow it.",
         "Every picture as a MiniMax H3 reference (<Picture 1> … in card order), for "
         "Luna-H3-RefsOut, which splits it into the sampler's ref_image sockets.",
-        "What sits on the shot timeline and where, in frames. Today: the song, locked from "
-        "frame 0. Pictures and clips join it in later versions of this node.",
+        "What sits on the shot timeline and where, in frames: keyframe pictures, guide clips and "
+        "guide or locked sounds.",
+        "The frames of clip card V1 (whatever its role), decoded as the card says. For Luna-LLMPrompt's "
+        "video input. Empty when no clip is loaded.",
+        "The shot length in frames: the seconds input at 24 fps when wired, else the length stored on the "
+        "node. For the H3 node's length and Luna-LLMPrompt's frames.",
     ) + tuple(
         f"Picture {i + 1} at its ORIGINAL size (only the batch is conformed), "
         f"in card order. Wire to the MiniMax H3 ref_image_{i} socket — or in FL2VA, "
@@ -359,9 +374,6 @@ class LunaAssetLoader:
                     "forceInput": True,
                     "tooltip": "The generation height. See width.",
                 }),
-                "previous_frames": ("IMAGE", {
-                    "tooltip": "The previous shot's frames, for a continuation whose source is 'Input': its last frames open this shot, so the motion carries on across the cut.",
-                }),
                 # Added LAST, like every input since media_state: nothing saved shifts.
                 "song_start": ("FLOAT", {
                     "forceInput": True,
@@ -393,17 +405,6 @@ class LunaAssetLoader:
             if resolved and os.path.isfile(resolved):
                 s = os.stat(resolved)
                 m.update(f"{c['file']}|{s.st_size}|{s.st_mtime_ns}".encode("utf-8"))
-        # A continuation from an output folder must re-run when a newer shot lands there.
-        try:
-            cont = _parse_media(media_state)["continuation"]
-            # ... and when the picked continuation file is overwritten under the same name.
-            if cont["on"] and cont["from"] in ("folder", "file"):
-                src = _output_newest(cont["folder"]) if cont["from"] == "folder" else _media_file(cont["file"])
-                if src:
-                    s = os.stat(src)
-                    m.update(f"{src}|{s.st_size}|{s.st_mtime_ns}".encode("utf-8"))
-        except (RuntimeError, OSError, ValueError):
-            pass
         return m.hexdigest()
 
     @classmethod
@@ -415,23 +416,35 @@ class LunaAssetLoader:
         return True
 
     def load(self, image_paths, image_count, asset_state="", media_state="", seconds=None, shot=None,
-             width=None, height=None, previous_frames=None, song_start=None):
+             width=None, height=None, song_start=None):
         paths = _split_paths(image_paths)
         media = _parse_media(media_state)
         cards, clips = media["audio"], media["video"]
-        if not paths and not cards and not clips:
-            raise RuntimeError(
-                "[Luna-H3-AssetLoader] Nothing loaded. Press Upload and add pictures, clips or a song."
-            )
         shot_len = shot_frames(seconds, media["shot_frames"])
+        # The `frames` output feeds H3's `length`, so it sits on the target's grid (17k+5 for H3): a typed
+        # 5.0 s is 120 frames, which H3 would not make. shot_len itself stays as asked; the song window does too.
+        out_frames = grid_frames(shot_len, target_grid(media["settings"]["target"]))
+        # The canvas size when BOTH are wired; else None (picture 1's size, or 0, is used).
+        canvas = (int(width), int(height)) if width and height and int(width) > 0 and int(height) > 0 else None
+        if not paths and not cards and not clips:
+            # Not an error: a graph can run before any card is filled. Everything is empty,
+            # the refs are well-formed (RefsOut and the brief rebuild cope), and the note says why.
+            print("[Luna-H3-AssetLoader] Nothing loaded: empty outputs. Press Upload and add pictures, "
+                  "clips or a song.")
+            refs = {"images": [], "videos": [], "video_audios": [], "audios": [], "width": 0, "height": 0,
+                    "brief": "Nothing loaded.", "song": None,
+                    "items": {"images": [], "videos": [], "video_audios": [], "audios": [], "song": "",
+                              "extra": []}}
+            timeline = {"version": 2, "fps": FPS, "frames": shot_len, "items": []}
+            result = (None, canvas[0] if canvas else 0, canvas[1] if canvas else 0, "Nothing loaded.", None,
+                      refs, timeline, None, out_frames) + (None,) * MAX_IMAGES
+            return {"ui": {"luna_asset_audio": []}, "result": result}
 
         # --- load everything -------------------------------------------------
         audio, song, song_line = self._song(cards, seconds, shot, song_start)
         settings = media["settings"]
         decoded = self._clips(clips, width, height, settings)
         extra_sounds = self._sounds(cards)
-        carry, carry_line = self._continuation(media["continuation"], cards, song, width, height, previous_frames,
-                                               settings)
         frames, dims, originals = [], [], []
         if paths:
             states = _parse_state(asset_state, len(paths))
@@ -452,8 +465,6 @@ class LunaAssetLoader:
                    for k, (c, d) in enumerate(zip(clips, decoded)) if c["role"] == "guide"]
         placed += [(f"Sound A{j + 1} ({c['file']})", c["at"], 1)
                    for j, c in enumerate(cards) if c["role"] in ("guide", "lock")]
-        if carry is not None:
-            placed.append(("The continuation", 0, int(carry["frames" if carry["kind"] == "video" else "image"].shape[0])))
         errors = check_placements(shot_len, placed, settings["target"])
         if errors:
             raise RuntimeError("[Luna-H3-AssetLoader] " + " ".join(errors) + " Drag it on the shot timeline.")
@@ -466,7 +477,14 @@ class LunaAssetLoader:
                 "videos": [decoded[k]["batch"] for k in ref_clips],
                 "video_audios": [decoded[k]["sound"] for k in ref_clips],
                 "audios": [extra_sounds[j][0] for j in ref_sounds if extra_sounds.get(j)],
-                "width": dims[0][0] if dims else 0, "height": dims[0][1] if dims else 0}
+                "width": dims[0][0] if dims else 0, "height": dims[0][1] if dims else 0,
+                # The song window, so Luna-H3-RefsOut can hand it on (its `audio` output).
+                "song": audio}
+        # One description per item WITHOUT its <Tag>, per category. Luna-H3-RefsOut rebuilds the
+        # brief from these with fresh numbering when it switches a category off (a clip sound
+        # off moves the standalone sounds down a number), so the tags cannot be baked in here.
+        items = {"images": [], "videos": [], "video_audios": [decoded[k]["sound"] is not None for k in ref_clips],
+                 "audios": [], "song": song_line or "", "extra": []}
 
         # --- the brief ---------------------------------------------------------------
         parts = []
@@ -474,17 +492,18 @@ class LunaAssetLoader:
             lines = []
             for i in ref_pics:
                 (w, h), (ow, oh) = dims[i], originals[i]
-                entry = f"{tags['pictures'][i]} = {_describe_ar(w, h)}"
+                desc = _describe_ar(w, h)
                 if len(ref_pics) != len(paths):
-                    entry += f" (picture card {i + 1})"
+                    desc += f" (picture card {i + 1})"
                 if (w, h) != (ow, oh):
                     # Say what it was as well as what it became. A prompt writer told
                     # only the resized number cannot tell a deliberate crop from an
                     # accident, and neither can you reading it back later.
-                    entry += f" [resized from {ow}x{oh}]"
+                    desc += f" [resized from {ow}x{oh}]"
                 if notes[i]:
-                    entry += f" [{notes[i]}]"
-                lines.append(entry)
+                    desc += f" [{notes[i]}]"
+                items["images"].append(desc)
+                lines.append(f"{tags['pictures'][i]} = {desc}")
             parts.append("Reference images, in order: " + "; ".join(lines) + ".")
         # FL2VA forces both frames to the exact generation size — the first with
         # crop disabled, so a mismatched aspect is STRETCHED, and the last with a
@@ -503,7 +522,10 @@ class LunaAssetLoader:
                         f"stretched and the last centre-cropped.")
                 print(f"[Luna-H3-AssetLoader] {warn}")
                 parts.append(warn)
+                # Kept apart from "extra": it is about the pictures, so it goes when they are switched off.
+                items["picture_warning"] = warn
         for k in ref_clips:
+            items["videos"].append(decoded[k]["line"])
             line = f"{tags['videos'][k]} = {decoded[k]['line']}"
             if k in tags["video_audio"]:
                 line += f"; its sound is {tags['video_audio'][k]}"
@@ -512,35 +534,38 @@ class LunaAssetLoader:
             parts.append(line + ".")
         for j in ref_sounds:
             if extra_sounds.get(j):
+                items["audios"].append(extra_sounds[j][1])
                 parts.append(f"{tags['sounds'][j]} = {extra_sounds[j][1]}.")
         if refs["audios"] and not refs["images"] and not refs["videos"]:
             parts.append("WARNING: MiniMax H3 does not accept reference sounds without a reference "
                          "picture or clip.")
         on_shot = self._shot_lines(pic, clips, decoded, cards, song)
-        if carry_line:
-            on_shot.insert(0, carry_line)
         if on_shot:
-            parts.append(f"On the shot ({shot_len} frames, {shot_len / FPS:.2f} s): " + "; ".join(on_shot) + ".")
+            on_line = f"On the shot ({shot_len} frames, {shot_len / FPS:.2f} s): " + "; ".join(on_shot) + "."
+            parts.append(on_line)
+            items["extra"].append(on_line)
         if song_line:
             parts.append(song_line)
         brief = " ".join(parts)
         refs["brief"] = brief
+        refs["items"] = items
         print(f"[Luna-H3-AssetLoader] {brief}")
 
         timeline = self._timeline(shot_len, pic, frames, clips, decoded, cards, extra_sounds, audio, song)
-        if carry is not None:
-            timeline["items"].insert(0, carry)
         numbered: list = [frames[i] if i < len(frames) else None for i in range(MAX_IMAGES)]
-        if dims:
+        if canvas:
+            # The canvas size wins whenever it is wired: one source of truth for the size.
+            w, h = canvas
+        elif dims:
             w, h = dims[0]
         else:
-            # No pictures: hand on the canvas size when it is wired rather than a
-            # silent 0x0; `images` and image_N stay empty (never black frames).
-            w = int(width) if width and int(width) > 0 else 0
-            h = int(height) if height and int(height) > 0 else 0
-            if not (w and h):
-                print("[Luna-H3-AssetLoader] No pictures loaded and no width/height wired: width and height are 0.")
-        result = (conform(frames) if frames else None, w, h, brief, audio, refs, timeline) + tuple(numbered)
+            # No pictures and nothing wired: a plain 0x0; `images` and image_N stay
+            # empty (never black frames).
+            w = h = 0
+            print("[Luna-H3-AssetLoader] No pictures loaded and no width/height wired: width and height are 0.")
+        video = decoded[0]["batch"] if decoded else None
+        result = (conform(frames) if frames else None, w, h, brief, audio, refs, timeline, video,
+                  out_frames) + tuple(numbered)
         return {"ui": {"luna_asset_audio": [song] if song else []}, "result": result}
 
     @staticmethod
@@ -655,52 +680,6 @@ class LunaAssetLoader:
         return audio, info, line
 
     @staticmethod
-    def _continuation(cont, cards, song, width, height, previous_frames, settings=None):
-        """The end of the previous shot -> (timeline item at frame 0, brief line), or (None, "").
-
-        As many frames as the song's overlap when the song is cut by shot number, so
-        sound and picture overlap by the same amount at every cut; otherwise the
-        count stored on the continuation. Shot 1 has nothing before it."""
-        if not cont["on"]:
-            return None, ""
-        if song and song.get("shot") == 1:
-            return None, "shot 1: no continuation (nothing comes before it)"
-        n = 1 if cont["take"] == "last" else (song["overlap"] if song and song.get("shot") else cont["frames"])
-        n = max(1, int(n))
-        if cont["from"] == "input":
-            if previous_frames is None:
-                raise RuntimeError("[Luna-H3-AssetLoader] The continuation's source is 'Input', but "
-                                   "previous_frames is not wired.")
-            tail = previous_frames[-n:]
-            if n > 1 and tail.shape[0] < n:
-                raise RuntimeError(f"[Luna-H3-AssetLoader] previous_frames has {tail.shape[0]} frame(s); "
-                                   f"the continuation needs {n}.")
-            name, src = "previous_frames", "the previous_frames input"
-        else:
-            path = _output_newest(cont["folder"]) if cont["from"] == "folder" else _media_file(cont["file"])
-            if not path:
-                where = (f"the output folder '{cont['folder'] or '(output)'}'" if cont["from"] == "folder"
-                         else f"the input folder ('{cont['file']}')")
-                raise RuntimeError(f"[Luna-H3-AssetLoader] The continuation found no video in {where}.")
-            info = probe_media(path)
-            box = (int(width), int(height)) if width and height and int(width) > 0 and int(height) > 0 else None
-            size = ("box", box[0], box[1]) if box else ("edge", 768)
-            target = (settings or {}).get("target", "h3")
-            fps = target_fps(target, info.get("fps")) if n > 1 else (info.get("fps") or FPS)
-            tail, got = decode_clip(path, tail_start(info.get("duration", 0.0), fps, n, info.get("fps")), n, fps,
-                                    size, "crop", 1, "fp32", target_grid(target) if n > 1 else "free")
-            if n > 1 and got["frames"] < n:
-                raise RuntimeError(f"[Luna-H3-AssetLoader] {got['name']} gave {got['frames']} frame(s) for the "
-                                   f"continuation; it needs {n}.")
-            tail = tail[-n:]
-            name, src = got["name"], got["name"]
-        if n == 1:
-            return ({"kind": "picture", "card": "continuation", "at": 0, "file": name, "image": tail[-1:]},
-                    f"frame 0: the last frame of {src} (continuation)")
-        return ({"kind": "video", "card": "continuation", "at": 0, "file": name, "frames": tail, "audio": None},
-                f"frames 0-{n - 1}: the last {n} frames of {src} (continuation — the motion carries on)")
-
-    @staticmethod
     def _sounds(cards):
         """Sound cards 2-3 that are references or guides -> {index: (AUDIO, description)}.
         Cut to their window, never filled: a reference ends where it ends."""
@@ -803,18 +782,6 @@ def _media_file(name: str):
     return _inside(root, bare)
 
 
-def _output_newest(folder: str):
-    """The newest video in a folder under ComfyUI's output folder ('' = the output
-    folder itself), or None. The folder name is screened like _input_file's."""
-    base = _inside(folder_paths.get_output_directory(), (folder or "").strip().strip("/\\"), "dir")
-    if not base:
-        return None
-    files = [(n, os.path.getmtime(os.path.join(base, n))) for n in os.listdir(base)
-             if os.path.isfile(os.path.join(base, n))]
-    name = newest_video(files)
-    return os.path.join(base, name) if name else None
-
-
 import asyncio
 
 try:
@@ -835,20 +802,6 @@ if PromptServer is not None:
             return web.json_response(await asyncio.get_running_loop().run_in_executor(None, probe_media, path))
         except Exception as e:
             return web.json_response({"error": f"cannot read: {type(e).__name__}"}, status=415)
-
-    @PromptServer.instance.routes.get("/lunasave/newest-video")
-    async def _luna_newest(request):
-        """Which video the continuation would take from an output folder, right now."""
-        path = _output_newest(request.query.get("folder", ""))
-        if not path:
-            return web.json_response({"name": None})
-        info = {"name": os.path.basename(path), "mtime": os.path.getmtime(path)}
-        try:
-            pm = await asyncio.get_running_loop().run_in_executor(None, probe_media, path)
-            info.update({k: v for k, v in pm.items() if k in ("duration", "fps", "width", "height")})
-        except Exception:
-            pass
-        return web.json_response(info)
 
     @PromptServer.instance.routes.get("/lunasave/filmstrip")
     async def _luna_filmstrip(request):

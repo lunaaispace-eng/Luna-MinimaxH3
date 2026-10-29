@@ -285,11 +285,51 @@ class LunaH3ReferenceLoader:
             "brief": brief,
             "width": w,
             "height": h,
+            # This loader has no song; the keys exist so Luna-H3-RefsOut works with either loader.
+            "song": None,
+            "items": _build_items(dims, v_info, video_audios, a_info),
         }
         print(f"[Luna-H3-ReferenceLoader] {len(frames)} picture(s), {len(videos)} clip(s), "
               f"{sum(1 for t in video_audios if t is not None)} soundtrack(s), "
               f"{len(audios)} standalone audio")
         return (refs, batch, w, h, brief)
+
+
+def _build_items(dims, v_info, video_audios, a_info) -> dict:
+    """One description per item WITHOUT its <Tag>, the same shape the Luna-H3-AssetLoader
+    writes, so Luna-H3-RefsOut can rebuild the brief with fresh numbering when a category
+    is switched off. The tags are added there, in H3's order."""
+    videos = []
+    for info in v_info:
+        entry = (f"{info['seconds']:.2f} s, {info['frames']} frames at {FPS} fps, "
+                 f"{_describe_ar(info['width'], info['height'])}")
+        sw, sh = info["source_size"]
+        if abs(info["source_fps"] - FPS) > 0.01:
+            entry += f" [resampled from {info['source_fps']:.3f} fps]"
+        if (sw, sh) != (info["width"], info["height"]):
+            entry += f" [decoded down from {sw}x{sh}]"
+        if info["start"] > 0:
+            entry += f" [from {info['start']:.2f} s of {info['name']}]"
+        videos.append(entry)
+    audios = []
+    for info in a_info:
+        entry = (f"{info['seconds']:.2f} s, {info['sample_rate'] / 1000:.1f} kHz, "
+                 f"{'stereo' if info['channels'] >= 2 else 'mono'}")
+        if info["start"] > 0:
+            entry += f" [from {info['start']:.2f} s of {info['name']}]"
+        if info["short"]:
+            entry += f" [asked for {info['asked']:.2f} s; the file ended first]"
+        audios.append(entry)
+    warning = ""
+    if len(dims) >= 2:
+        r0, r1 = dims[0][0] / dims[0][1], dims[1][0] / dims[1][1]
+        if abs(r0 - r1) / max(r0, r1) > 0.02:
+            warning = (f"WARNING: pictures 1 and 2 have different aspect ratios "
+                       f"({_describe_ar(*dims[0])} vs {_describe_ar(*dims[1])}); in FL2VA the first "
+                       f"frame is stretched and the last centre-cropped.")
+    return {"images": [_describe_ar(w, h) for w, h in dims], "videos": videos,
+            "video_audios": [t is not None for t in video_audios], "audios": audios,
+            "song": "", "extra": [], "picture_warning": warning}
 
 
 def _build_brief(frames, dims, v_info, video_audios, a_info) -> str:
