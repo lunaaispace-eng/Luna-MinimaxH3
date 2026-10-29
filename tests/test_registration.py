@@ -1,4 +1,4 @@
-"""The pack registers exactly its 12 nodes, node id = display name, one category, and every
+"""The pack registers exactly its 13 nodes, node id = display name, one category, and every
 frontend file and kit entry names a registered id.
 
     E:/ComfyUI-Easy-Install/python_embeded/python.exe -m pytest tests
@@ -18,7 +18,8 @@ MEDIA_TOOLS_WEB = os.environ.get("LUNA_MEDIA_TOOLS_WEB", r"D:\Claude\Luna-Media-
 
 IDS = ["Luna-H3-Canvas", "Luna-H3-ConcatAVLatent", "Luna-H3-ReferenceLoader", "Luna-H3-AssetLoader",
        "Luna-H3-RefsOut", "Luna-H3-ShotList", "Luna-H3-LoopStart", "Luna-H3-LoopScene",
-       "Luna-H3-LoopProfile", "Luna-H3-GuideApply", "Luna-H3-GuideClip", "Luna-H3-LoopEnd"]
+       "Luna-H3-LoopProfile", "Luna-H3-GuideApply", "Luna-H3-GuideClip", "Luna-H3-LoopEnd",
+       "Luna-H3-Sampler"]
 
 
 def load_pack():
@@ -48,7 +49,7 @@ class RegistrationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.pack = load_pack()
 
-    def test_twelve_ids(self):
+    def test_thirteen_ids(self):
         self.assertEqual(sorted(self.pack.NODE_CLASS_MAPPINGS), sorted(IDS))
 
     def test_id_is_display_name(self):
@@ -64,7 +65,7 @@ class RegistrationTests(unittest.TestCase):
 
     def test_every_js_node_name_is_a_registered_id(self):
         wanted = {"luna_asset_loader.js": "Luna-H3-AssetLoader", "luna_shot_list.js": "Luna-H3-ShotList",
-                  "luna_h3_canvas.js": "Luna-H3-Canvas"}
+                  "luna_h3_canvas.js": "Luna-H3-Canvas", "luna_sampler.js": "Luna-H3-Sampler"}
         for name, node_id in wanted.items():
             with open(os.path.join(PACK, "web", name), encoding="utf8") as f:
                 self.assertIn(f'"{node_id}"', f.read(), name)

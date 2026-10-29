@@ -1,0 +1,14 @@
+{
+  "MiniMaxH3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors": {
+    "strength": 0.8,
+    "total_steps": 12,
+    "transition": null,
+    "shift": 12.0,
+    "audio_shift": 2.0,
+    "sampler": "er_sde",
+    "scheduler": "simple",
+    "cfg": 1.0,
+    "source": "Snow_Minimax_setup_24Oct.json (Peter, sounds well); audio 2 = the DMAD card (shift 12 / audio 2), Peter 2026-10-29: DMAD always takes its recommended audio shift",
+    "label": "TESTED"
+  }
+}
