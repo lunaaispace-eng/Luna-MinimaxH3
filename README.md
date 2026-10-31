@@ -82,6 +82,9 @@ gave about 70 % of V2's extra motion at no extra time.
 `negative`, with their keyframe latents shrunk to the low grid. Connected, build it with a second `MiniMaxH3ImageToVideo`
 at pass 1's size, as a native two-stage graph does; `negative_low` is used only when `cfg_low` is above 1.
 
+`sigmas_low` ending at 0.01 or below means pass 1 has finished: pass 2 then draws fresh noise for the audio too, from
+the same seed as the video, as a native second pass does. This works with any sampler in pass 1.
+
 ### Example workflows and tools
 
 `example_workflows/` holds five small workflows (reference to video, image to video, LoRA on pass 1 only, 1 MP and

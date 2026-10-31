@@ -34,7 +34,7 @@ Pass 1 runs the first transition steps of one schedule at the low grid. Pass 2 r
 
 Pass 1 inputs are lora_low, strength_low, shift_low, audio_shift_low, sampler_low and cfg_low. Pass 2 inputs are lora_high, strength_high, shift_high, audio_shift_high, sampler_high and cfg_high. scheduler, total_steps, transition, highres_denoise and noise_seed belong to the one shared schedule. lowres_scale, upscaler_model, rho, w_min and w_max belong to the lift. upscaler_model selects the learned H3 latent upscaler; none uses nearest. low_res_head is the previous scene's low-grid tail. sigmas_low and sigmas_high replace the computed schedules when they are connected.
 
-Audio is one trajectory across both passes and finishes in pass 2, next to the full-size video. A locked song (audio mask 0) stays exact in both outputs.
+Audio is one trajectory across both passes and finishes in pass 2, next to the full-size video. A locked song (audio mask 0) stays exact in both outputs. When sigmas_low ends at 0.01 or below, pass 1 has finished and pass 2 draws fresh noise for the audio too, as a native second pass does.
 
 positive_low and negative_low are optional: conditioning built at pass 1's size, used by pass 1 only.
 

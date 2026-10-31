@@ -9,6 +9,8 @@ The hand-over between the passes is exact flow arithmetic, not a sampler step:
 - audio: keeps its own trajectory. Its clean estimate and its noise are recovered from pass 1's final state, then
   re-combined at pass 2's first sigma, in each arm's own audio scale. The audio is never cut short: it finishes in
   pass 2, next to the full-size video. A locked song (audio mask 0) is restored bit for bit.
+  A pass 1 that stopped at FINISHED_SIGMA or below has no noise left to recover (dividing by that sigma magnifies the
+  sampler's own error), so pass 2 draws fresh noise for video and audio from one seed, as a native second pass does.
 """
 
 import logging
@@ -21,6 +23,8 @@ import comfy.nested_tensor
 import comfy.sample
 import comfy.samplers
 import comfy.utils
+
+FINISHED_SIGMA = 0.01
 
 
 def _split(samples):
@@ -252,11 +256,14 @@ def two_pass_sample(low_res_model, positive, negative, vae, latent_image, sample
 
     # Pass 2: the rest of the schedule at the high grid.
     high_masks = masks if masks is not None else None
-    video_noise = comfy.sample.prepare_noise(lifted, (noise_seed + 1) % (1 << 64), batch_index)
     high_in = [lifted] + audio_x0
-    out = _sample(high_model, _pack([video_noise] + [e.to(video_noise) for e in audio_eps], nested),
-                  _pack(high_in, nested), high_masks, nested, positive, negative, cfg_high, sampler_high,
-                  sigmas_high, (noise_seed + 1) % (1 << 64))
+    if sigma_k <= FINISHED_SIGMA:
+        high_noise = comfy.sample.prepare_noise(_pack(high_in, nested), (noise_seed + 1) % (1 << 64), batch_index)
+    else:
+        video_noise = comfy.sample.prepare_noise(lifted, (noise_seed + 1) % (1 << 64), batch_index)
+        high_noise = _pack([video_noise] + [e.to(video_noise) for e in audio_eps], nested)
+    out = _sample(high_model, high_noise, _pack(high_in, nested), high_masks, nested, positive, negative, cfg_high,
+                  sampler_high, sigmas_high, (noise_seed + 1) % (1 << 64))
     dtype = comfy.model_management.intermediate_dtype()
     out_streams = [s.to(device=device, dtype=dtype) for s in _split(out)[0]]
     logging.info("[Luna-H3-Sampler] check: video mask %s; lifted std %.4f; pass 2 changed the video by %.4f "

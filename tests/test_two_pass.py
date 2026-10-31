@@ -11,6 +11,7 @@ from h3_harness import FakeVAE, av_latent, empty_cond, sampler, tiny_h3_model  #
 import torch  # noqa: E402
 
 import comfy.nested_tensor  # noqa: E402
+import comfy.sample  # noqa: E402
 import comfy.samplers  # noqa: E402
 import luna_two_pass  # noqa: E402
 from luna_two_pass import arm_sigmas, audio_handover, two_pass_sample  # noqa: E402
@@ -110,6 +111,30 @@ class TwoPassTests(unittest.TestCase):
             return seen[1]
 
         self.assertTrue(torch.allclose(pass2_audio_noise(2.0) * 2.0, pass2_audio_noise(1.0), atol=1e-6))
+
+    def pass2_noise(self, sigma_end):
+        seen = []
+        real = luna_two_pass._sample
+
+        def spy(model, noise, *args, **kwargs):
+            seen.append(noise)
+            return real(model, noise, *args, **kwargs)
+
+        with patch.object(luna_two_pass, "_sample", spy):
+            self.run_two_pass(sigmas_low=torch.tensor([1.0, 0.6, sigma_end]))
+        return seen[1].unbind()
+
+    def test_finished_pass_1_gets_native_noise(self):
+        native = comfy.sample.prepare_noise(av_latent()["samples"], 1).unbind()
+        video, audio = self.pass2_noise(0.001)
+        self.assertTrue(torch.equal(video, native[0]))
+        self.assertTrue(torch.equal(audio, native[1]))
+
+    def test_unfinished_pass_1_keeps_its_audio_noise(self):
+        native = comfy.sample.prepare_noise(av_latent()["samples"], 1).unbind()
+        video, audio = self.pass2_noise(0.3)
+        self.assertTrue(torch.equal(video, native[0]))
+        self.assertFalse(torch.equal(audio, native[1]))
 
     def test_transition_must_be_part_way(self):
         for t in (0, 4):
