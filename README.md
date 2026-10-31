@@ -38,7 +38,7 @@ Luna H3 Reference Loader, Luna H3 Refs Out, Luna Shot List). Node ids changed wi
 with the old nodes need those nodes swapped for the new ones. Remove the old folders from `custom_nodes` when you
 install this pack.
 
-It also replaces the separate [Luna-H3-Sampler](https://github.com/lunaaispace-eng/Luna-H3-Sampler) pack. That node
+It also replaces the separate Luna-H3-Sampler pack. That node
 keeps its id `Luna-H3-Sampler`, so saved workflows load unchanged. Remove the `Luna-H3-Sampler` folder from
 `custom_nodes`: two packs with the same node id collide.
 
