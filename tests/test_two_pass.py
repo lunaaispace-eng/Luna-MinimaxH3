@@ -152,6 +152,38 @@ class TwoPassTests(unittest.TestCase):
         self.assertFalse(torch.equal(streams(latent)[0][:, :, 1], video[:, :, 1]))
         self.assertTrue(torch.equal(streams(latent)[1], song))
 
+    def run_with_keyframes(self, **kw):
+        """Conditioning as MiniMaxH3ImageToVideo builds it; returns the keyframe latent each pass saw."""
+        seen = []
+        real = luna_two_pass._sample
+
+        def spy(model, noise, latent, masks, nested, positive, negative, cfg, smp, sigmas, seed, on_x0=None):
+            seen.append((positive[0][1]["minimax_keyframes"][0]["latent"].clone(),
+                         negative[0][1]["minimax_keyframes"][0]["latent"].clone()))
+            return real(model, noise, latent, masks, nested, empty_cond(), empty_cond(), cfg, smp, sigmas, seed, on_x0)
+
+        def cond(value, grid):
+            kf = {"resolved_frame_index": 0, "latent": torch.full((1, 24, 1, grid, grid), value)}
+            return [[torch.zeros((1, 4, 8)), {"minimax_keyframes": [kf]}]]
+
+        with patch.object(luna_two_pass, "_sample", spy):
+            two_pass_sample(self.model, cond(1.0, 4), cond(2.0, 4), self.vae, av_latent(), sampler("euler"),
+                            sampler("euler"), "simple", 4, 2, 0, 1.0, 1.0, 0.5, 0.0, 0.5, 1.0, lift=nearest_lift,
+                            **{k: cond(v, 2) for k, v in kw.items()})
+        return seen
+
+    def test_low_conditioning_reaches_pass_1_only(self):
+        seen = self.run_with_keyframes(positive_low=3.0, negative_low=4.0)
+        self.assertTrue(torch.equal(seen[0][0], torch.full((1, 24, 1, 2, 2), 3.0)))
+        self.assertTrue(torch.equal(seen[0][1], torch.full((1, 24, 1, 2, 2), 4.0)))
+        self.assertTrue(torch.equal(seen[1][0], torch.full((1, 24, 1, 4, 4), 1.0)))
+        self.assertTrue(torch.equal(seen[1][1], torch.full((1, 24, 1, 4, 4), 2.0)))
+
+    def test_without_low_conditioning_pass_1_shrinks_the_keyframes(self):
+        seen = self.run_with_keyframes()
+        self.assertTrue(torch.allclose(seen[0][0], torch.full((1, 24, 1, 2, 2), 1.0)))
+        self.assertEqual(tuple(seen[1][0].shape[-2:]), (4, 4))
+
     def test_high_model_defaults_to_low(self):
         a, _ = self.run_two_pass()
         b, _ = self.run_two_pass(high_res_model=self.model)

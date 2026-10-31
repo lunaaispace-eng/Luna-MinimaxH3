@@ -158,10 +158,11 @@ def _sample(model, noise, latent, masks, nested, positive, negative, cfg, sample
 def two_pass_sample(low_res_model, positive, negative, vae, latent_image, sampler_low, sampler_high, scheduler,
                     total_steps, transition, noise_seed, cfg_low, cfg_high, lowres_scale, rho, w_min, w_max,
                     latent_lifter=None, high_res_model=None, low_res_head=None, highres_denoise=None,
-                    sigmas_low=None, sigmas_high=None, lift=None):
+                    sigmas_low=None, sigmas_high=None, lift=None, positive_low=None, negative_low=None):
     """Return (latent, low_res_latent), both ComfyUI LATENT dicts in VAE space.
 
     `sigmas_low` / `sigmas_high` override the computed schedules. `lift` defaults to `luna_lift.lift_video`.
+    `positive_low` / `negative_low` replace `positive` / `negative` in pass 1 only: conditioning built at pass 1's size.
     """
     if not 1 <= transition < total_steps:
         raise ValueError("Luna-H3-Sampler: transition must be at least 1 and below total_steps")
@@ -217,8 +218,10 @@ def two_pass_sample(low_res_model, positive, negative, vae, latent_image, sample
     low_in = [low_video] + audio
     low_latent = _pack(low_in, nested)
     last_x0 = {}
+    positive_1 = positive if positive_low is None else positive_low
+    negative_1 = negative if negative_low is None else negative_low
     state_vae = _sample(low_res_model, comfy.sample.prepare_noise(low_latent, noise_seed, batch_index), low_latent,
-                        low_masks, nested, _keyframes_at(positive, h, w), _keyframes_at(negative, h, w), cfg_low,
+                        low_masks, nested, _keyframes_at(positive_1, h, w), _keyframes_at(negative_1, h, w), cfg_low,
                         sampler_low, sigmas_low, noise_seed, on_x0=lambda x0: last_x0.__setitem__("x0", x0))
     if "x0" not in last_x0:
         raise RuntimeError("Luna-H3-Sampler: pass 1 gave no clean estimate (the sampler reported no step)")

@@ -36,6 +36,8 @@ Pass 1 inputs are lora_low, strength_low, shift_low, audio_shift_low, sampler_lo
 
 Audio is one trajectory across both passes and finishes in pass 2, next to the full-size video. A locked song (audio mask 0) stays exact in both outputs.
 
+positive_low and negative_low are optional: conditioning built at pass 1's size, used by pass 1 only.
+
 latent is the full-grid result. Connect it to a save node, or to the next scene as latent_image. low_res_latent is the low-grid video with that same finished audio. Connect it to the next scene's low_res_head.
 """
 
@@ -317,6 +319,16 @@ class LunaH3Sampler(io.ComfyNode):
                     optional=True,
                     tooltip="Pass 2 model, for example another fine-tune or its own LoRA stack. Pass 2 adds lora_high and its shifts to it. Leave it disconnected to use model.",
                 ),
+                io.Conditioning.Input(
+                    "positive_low",
+                    optional=True,
+                    tooltip="Pass 1 positive, from a second MiniMaxH3ImageToVideo.positive at pass 1's size, as a native two-stage graph does. Leave it disconnected to use positive.",
+                ),
+                io.Conditioning.Input(
+                    "negative_low",
+                    optional=True,
+                    tooltip="Pass 1 negative, built from positive_low. Used only when cfg_low is above 1. Leave it disconnected to use negative.",
+                ),
             ],
             outputs=[
                 io.Latent.Output(
@@ -371,6 +383,8 @@ class LunaH3Sampler(io.ComfyNode):
         sigmas_high=None,
         high_res_model=None,
         upscaler_model="none",
+        positive_low=None,
+        negative_low=None,
     ):
         low_arm = {
             "lora": lora_low,
@@ -436,8 +450,11 @@ class LunaH3Sampler(io.ComfyNode):
             lift=lift_video,
             latent_lifter=(None if upscaler_model == "none" else
                            lambda z, hw: learned_latent_lift(z, hw, upscaler_model)),
+            positive_low=positive_low,
+            negative_low=negative_low,
         )
         text = _readout(low_arm, high_arm, used_low, used_high, total_steps, transition, denoise, warnings)
+        text += "\npass 1 conditioning: " + ("positive" if positive_low is None else "positive_low")
         text += "\npass 2 model: " + ("model" if high_res_model is None else "high_res_model")
         text += f"\nupscaler: {upscaler_model}" + (" (nearest)" if upscaler_model == "none" else "")
         return io.NodeOutput(latent, low_latent, ui=ui.PreviewText(text))

@@ -23,7 +23,7 @@ INPUT_ORDER = [
     "lora_high", "strength_high", "shift_high", "audio_shift_high", "sampler_high", "cfg_high",
     "scheduler", "total_steps", "transition", "highres_denoise", "noise_seed",
     "lowres_scale", "upscaler_model", "rho", "w_min", "w_max",
-    "low_res_head", "sigmas_low", "sigmas_high", "high_res_model",
+    "low_res_head", "sigmas_low", "sigmas_high", "high_res_model", "positive_low", "negative_low",
 ]
 
 
@@ -86,6 +86,8 @@ class NodeTests(unittest.TestCase):
         self.assertFalse(by_id["sigmas_low"].lazy)
         self.assertTrue(by_id["high_res_model"].optional)
         self.assertFalse(by_id["high_res_model"].lazy)
+        self.assertTrue(by_id["positive_low"].optional)
+        self.assertTrue(by_id["negative_low"].optional)
 
     def test_low_res_head_is_lazy_only_when_connected(self):
         self.assertEqual(LunaH3Sampler.check_lazy_status(low_res_head=None), ["low_res_head"])

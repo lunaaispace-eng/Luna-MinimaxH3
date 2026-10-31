@@ -67,7 +67,8 @@ pass 2 refines detail.
   Samplers come in as `SAMPLER` sockets, so each pass can use any sampler.
 - Shared: `scheduler`, `total_steps`, `transition`, `highres_denoise`, `noise_seed`, `lowres_scale`, `upscaler_model`,
   `rho`, `w_min`, `w_max`.
-- Optional: `low_res_head` (previous scene's `low_res_latent`), `sigmas_low`, `sigmas_high`, `high_res_model`.
+- Optional: `low_res_head` (previous scene's `low_res_latent`), `sigmas_low`, `sigmas_high`, `high_res_model`,
+  `positive_low`, `negative_low`.
 - Outputs: `latent` (full size) and `low_res_latent` (pass 1 on the low grid, for the next scene's `low_res_head`).
 
 `luna_recipes.json` holds tested values per LoRA; picking a LoRA fills that pass's strength, steps and shifts.
@@ -76,6 +77,10 @@ pass 2 refines detail.
 shifts; pass 1 still uses `model`. Both must be MiniMax H3. Use it for a LoRA that only one pass should get. Tested
 2026-10-29 (DOJO2, 2 MP): v1.3 unet plus Kijai's Singularity V2 LoRA on `model` and plain v1.3 on `high_res_model`
 gave about 70 % of V2's extra motion at no extra time.
+
+`positive_low`, `negative_low` (optional): conditioning for pass 1 only. Not connected, pass 1 uses `positive` and
+`negative`, with their keyframe latents shrunk to the low grid. Connected, build it with a second `MiniMaxH3ImageToVideo`
+at pass 1's size, as a native two-stage graph does; `negative_low` is used only when `cfg_low` is above 1.
 
 ### Example workflows and tools
 
