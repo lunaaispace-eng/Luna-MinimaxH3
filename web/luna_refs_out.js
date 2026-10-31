@@ -1,7 +1,7 @@
 // Luna-H3-RefsOut — dims the sockets of a category that is switched off.
 //
-// The five switches (pictures, clips, clip_sound, sounds, song) decide what the
-// node delivers. A switched-off category delivers nothing, so its output sockets
+// The five switches, shown as ref_image, ref_video, ref_video_audio, ref_audio and audio
+// (real names pictures, clips, clip_sound, sounds, song), decide what the node delivers. A switched-off category delivers nothing, so its output sockets
 // are drawn dimmed (muted dot, muted "off" label) and come back when the switch
 // goes on. Only the drawing changes; links and slots are never touched.
 //
@@ -22,8 +22,27 @@ const CATEGORIES = {
     song: [19],
 };
 
+// A switch reads like the sockets it governs. Display only: saved values and wires go by the
+// real name, so old workflows keep working.
+const SWITCH_LABELS = {
+    pictures: "ref_image",
+    clips: "ref_video",
+    clip_sound: "ref_video_audio",
+    sounds: "ref_audio",
+    song: "audio",
+};
+
 const OFF_MARK = " (off)";
 const widgetValue = (node, name) => node.widgets?.find((w) => w.name === name)?.value;
+
+function labelSwitches(node) {
+    for (const [name, label] of Object.entries(SWITCH_LABELS)) {
+        const widget = node.widgets?.find((w) => w.name === name);
+        if (widget) widget.label = label;
+        const input = node.inputs?.find((i) => i.name === name);
+        if (input) input.label = label;
+    }
+}
 
 // A switch that cannot be read counts as on: never dim by mistake.
 const isOn = (node, name) => widgetValue(node, name) !== false;
@@ -87,6 +106,7 @@ app.registerExtension({
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = onCreated?.apply(this, arguments);
+            labelSwitches(this);
             watch(this);
             refresh(this);
             return result;
@@ -97,9 +117,10 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             const result = onConfigure?.apply(this, arguments);
+            labelSwitches(this);
             watch(this);
             refresh(this);
-            requestAnimationFrame(() => refresh(this));
+            requestAnimationFrame(() => { labelSwitches(this); refresh(this); });
             return result;
         };
     },

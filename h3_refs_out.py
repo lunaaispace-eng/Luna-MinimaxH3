@@ -55,7 +55,7 @@ class LunaH3RefsOut:
         "socket. Park it beside the H3 node and the loader stays one wire away, wherever "
         "you move it. Socket names match H3's own, so each one drags straight across. "
         "Sockets past what was loaded stay empty.\n\n"
-        "Five switches (pictures, clips, clip_sound, sounds, song) turn a category off: its sockets "
+        "Five switches (ref_image, ref_video, ref_video_audio, ref_audio, audio) turn a category off: its sockets "
         "then deliver nothing, which H3 skips, and `asset_brief` is rebuilt for what is left with "
         "the numbering recounted. Wire this node's `asset_brief` to the prompt writer. `audio` is the "
         "song, for the save node and the prompt writer."

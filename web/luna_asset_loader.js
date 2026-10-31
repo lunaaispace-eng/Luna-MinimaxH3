@@ -971,8 +971,20 @@ function applyCount(node) {
         node.addOutput(`image_${current + 1}`, "IMAGE");
         current++;
     }
+    labelOutputs(node);
     node.setDirtyCanvas(true, true);
     return { target, shown: current, blocked };
+}
+
+// Output names as shown: the image sockets read as the H3 inputs they feed, counted from 0
+// like them. Display only: migration and saved wires go by the real names.
+const OUTPUT_LABELS = { images: "llm_images", video: "llm_video" };
+function labelOutputs(node) {
+    for (const slot of node.outputs || []) {
+        const n = /^image_(\d+)$/.exec(slot.name || "");
+        const label = n ? `ref_image_${Number(n[1]) - 1}` : OUTPUT_LABELS[slot.name];
+        if (label) slot.label = label;
+    }
 }
 
 // The one way the count is ever set — stepper, arrows, card list, hand-typed
