@@ -37,3 +37,9 @@ test("readout file registers no second help, collapse or tint", () => {
     assert.match(src, /recipe\.shift/);
     assert.match(src, /recipe\.audio_shift/);
 });
+
+test("the LoRA lists keep their folders: only the closed widget is shortened", () => {
+    const src = code("luna_sampler.js");
+    assert.ok(!src.includes("getOptionLabel"));
+    assert.match(src, /defineProperty\(widget, "_displayValue"/);
+});

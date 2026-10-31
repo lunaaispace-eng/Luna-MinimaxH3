@@ -38,7 +38,9 @@ function guard(label, fn, fallback) {
 }
 guard.reported = new Set();
 
-// Long model file names hide the widget label; show the file's own name without folder or extension.
+// Long model file names hide the widget label; the closed widget shows the file's own name without
+// folder or extension. Not through options.getOptionLabel: with it ComfyUI builds the list item by item
+// and the list loses rgthree's folders. The list keeps the full paths.
 function shortName(value) {
     if (!value || value === "none") return value ?? "";
     return String(value).split(/[\\/]/).pop().replace(/\.(safetensors|ckpt|pt|pth|bin)$/i, "");
@@ -48,8 +50,12 @@ const SHORT_NAMED = new Set(["lora_low", "lora_high", "upscaler_model"]);
 function shortenCombos(node) {
     for (const widget of node.widgets || []) {
         if (!SHORT_NAMED.has(widget.name)) continue;
-        widget.options = widget.options || {};
-        widget.options.getOptionLabel = (value) => shortName(value);
+        Object.defineProperty(widget, "_displayValue", {
+            configurable: true,
+            get() {
+                return this.computedDisabled ? "" : shortName(this.value);
+            },
+        });
     }
 }
 
