@@ -97,7 +97,11 @@ def _load_lora(model, lora_name, strength, loaded):
 def _arm_model(model, lora_name, strength, shift, audio_shift, loaded):
     cloned = model.clone()
     cloned = _load_lora(cloned, lora_name, strength, loaded)
-    return _apply_shift(cloned, float(shift), float(audio_shift))
+    armed = _apply_shift(cloned, float(shift), float(audio_shift))
+    # ComfyUI hands a loaded entry to `parent` when a clone dies. A cancelled run frees these clones in one
+    # collection, so the parent must be the cached input, or the entry is orphaned and never unloaded.
+    armed.luna_clones, armed.parent = armed.parent, model
+    return armed
 
 
 def _readout(low, high, sigmas_low, sigmas_high, total_steps, transition, highres_denoise, warnings):

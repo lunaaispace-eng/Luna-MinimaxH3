@@ -1,5 +1,7 @@
+import gc
 import sys
 import unittest
+import weakref
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +12,7 @@ from h3_harness import FakeVAE, av_latent, empty_cond, sampler, tiny_h3_model  #
 
 import torch  # noqa: E402
 
+import comfy.model_management  # noqa: E402
 import comfy.model_sampling  # noqa: E402
 import comfy.samplers  # noqa: E402
 import luna_sampler  # noqa: E402
@@ -311,6 +314,24 @@ class NodeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pass 1 strength 2.5 is outside \\[0, 2\\]"):
                 LunaH3Sampler.execute(**self.kwargs(strength_low=2.5))
         sample.assert_not_called()
+
+    def test_cancelled_arm_hands_its_loaded_entry_back_to_the_input_model(self):
+        """A cancelled run frees the arm's clones in one collection; ComfyUI's entry must not be orphaned."""
+        base = tiny_h3_model()
+        gc.collect()
+        gc.disable()
+        try:
+            arm = luna_sampler._arm_model(base, "none", 0.0, 12.0, 3.0, {})
+            entry = comfy.model_management.LoadedModel(arm)
+            entry.real_model = weakref.ref(base.model)
+            run = {"arm": arm}
+            run["self"] = run  # the reference cycle a dead run leaves behind
+            del arm, run
+        finally:
+            gc.enable()
+        gc.collect()
+        self.assertFalse(entry.is_dead())
+        self.assertIs(entry.model, base)
 
 
 if __name__ == "__main__":
