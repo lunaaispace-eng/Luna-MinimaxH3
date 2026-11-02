@@ -293,12 +293,12 @@ class LunaAssetLoader:
     # slots to shrink the node, and ComfyUI maps outputs to the returned tuple by
     # INDEX — so anything that must keep its meaning has to sit at an index that
     # never moves. With image_N first, dropping image_3 would silently hand
-    # image_3's tensor to `images`. audio/refs/timeline (v3) and video/frames (v4) are
-    # fixed too, so they sit at 4-8; old saves are moved up by the frontend migration.
-    RETURN_TYPES = ("IMAGE", "INT", "INT", "STRING", "AUDIO", "LUNA_H3_REFS", "LUNA_TIMELINE", "IMAGE", "INT") \
-        + ("IMAGE",) * MAX_IMAGES
+    # image_3's tensor to `images`. audio/refs/timeline (v3), video/frames (v4) and overlap (v5)
+    # are fixed too, so they sit at 4-9; old saves are moved up by the frontend migration.
+    RETURN_TYPES = ("IMAGE", "INT", "INT", "STRING", "AUDIO", "LUNA_H3_REFS", "LUNA_TIMELINE", "IMAGE", "INT",
+                    "INT") + ("IMAGE",) * MAX_IMAGES
     RETURN_NAMES = ("images", "width", "height", "asset_brief", "audio", "refs", "timeline", "video",
-                    "frames") + tuple(f"image_{i + 1}" for i in range(MAX_IMAGES))
+                    "frames", "overlap") + tuple(f"image_{i + 1}" for i in range(MAX_IMAGES))
     # ComfyUI shows these when you hover an output socket, and the ⓘ panel lists
     # them too — one definition, both places, so they cannot disagree.
     OUTPUT_TOOLTIPS = (
@@ -326,6 +326,9 @@ class LunaAssetLoader:
         "video input. Empty when no clip is loaded.",
         "The shot length in frames: the seconds input at 24 fps when wired, else the length stored on the "
         "node. For the H3 node's length and Luna-LLMPrompt's frames.",
+        "The overlap set on sound card 1, in frames: how many frames each shot shares with the one before "
+        "(0 with no song). For the nodes that continue a clip from the one before and cut the shared frames "
+        "off again.",
     ) + tuple(
         f"Picture {i + 1} at its ORIGINAL size (only the batch is conformed), "
         f"in card order. Wire to the MiniMax H3 ref_image_{i} socket — or in FL2VA, "
@@ -437,7 +440,7 @@ class LunaAssetLoader:
                               "extra": []}}
             timeline = {"version": 2, "fps": FPS, "frames": shot_len, "items": []}
             result = (None, canvas[0] if canvas else 0, canvas[1] if canvas else 0, "Nothing loaded.", None,
-                      refs, timeline, None, out_frames) + (None,) * MAX_IMAGES
+                      refs, timeline, None, out_frames, 0) + (None,) * MAX_IMAGES
             return {"ui": {"luna_asset_audio": []}, "result": result}
 
         # --- load everything -------------------------------------------------
@@ -564,8 +567,9 @@ class LunaAssetLoader:
             w = h = 0
             print("[Luna-H3-AssetLoader] No pictures loaded and no width/height wired: width and height are 0.")
         video = decoded[0]["batch"] if decoded else None
+        overlap = int(cards[0]["overlap"]) if cards else 0
         result = (conform(frames) if frames else None, w, h, brief, audio, refs, timeline, video,
-                  out_frames) + tuple(numbered)
+                  out_frames, overlap) + tuple(numbered)
         return {"ui": {"luna_asset_audio": [song] if song else []}, "result": result}
 
     @staticmethod

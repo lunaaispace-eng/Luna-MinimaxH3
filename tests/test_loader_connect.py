@@ -47,10 +47,10 @@ def clip_stub(sound):
 
 class LoaderOutputTests(unittest.TestCase):
     def test_return_names_and_types(self):
-        self.assertEqual(Loader.RETURN_NAMES[:9], ("images", "width", "height", "asset_brief", "audio", "refs",
-                                                   "timeline", "video", "frames"))
-        self.assertEqual(Loader.RETURN_NAMES[9:], IMAGE_NAMES)      # image_N strictly last
-        self.assertEqual(Loader.RETURN_TYPES[7:9], ("IMAGE", "INT"))
+        self.assertEqual(Loader.RETURN_NAMES[:10], ("images", "width", "height", "asset_brief", "audio", "refs",
+                                                    "timeline", "video", "frames", "overlap"))
+        self.assertEqual(Loader.RETURN_NAMES[10:], IMAGE_NAMES)     # image_N strictly last
+        self.assertEqual(Loader.RETURN_TYPES[7:10], ("IMAGE", "INT", "INT"))
         self.assertEqual(len(Loader.RETURN_TYPES), len(Loader.RETURN_NAMES))
         self.assertEqual(len(Loader.OUTPUT_TOOLTIPS), len(Loader.RETURN_NAMES))
         self.assertIn("Luna-LLMPrompt", Loader.OUTPUT_TOOLTIPS[7])
@@ -77,7 +77,8 @@ class LoaderOutputTests(unittest.TestCase):
         self.assertEqual(out[5]["images"], [])
         self.assertIsNone(out[7])                    # video
         self.assertEqual(out[8], 124)                # frames: the card default
-        self.assertTrue(all(x is None for x in out[9:]))
+        self.assertEqual(out[9], 0)                  # overlap: no song
+        self.assertTrue(all(x is None for x in out[10:]))
 
     def test_empty_loader_hands_on_the_canvas_and_the_seconds(self):
         out = Loader().load("", 2, seconds=5.0, width=832, height=480)["result"]

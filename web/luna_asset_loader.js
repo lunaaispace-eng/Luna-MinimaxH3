@@ -827,8 +827,8 @@ async function uploadFiles(files) {
 
 /* --------------------------------------------------------------- outputs */
 
-// The nine fixed outputs (images, width, height, asset_brief, audio, refs,
-// timeline, video, frames) occupy slots 0-8 and are never touched. Only the
+// The ten fixed outputs (images, width, height, asset_brief, audio, refs,
+// timeline, video, frames, overlap) occupy slots 0-9 and are never touched. Only the
 // trailing image_N slots grow and shrink.
 //
 // `slot.hidden` does NOT work: setting it leaves the flag on the object but the
@@ -836,15 +836,15 @@ async function uploadFiles(files) {
 // why this adds and removes real slots instead.
 const FIXED_OUTS = [["images", "IMAGE"], ["width", "INT"], ["height", "INT"], ["asset_brief", "STRING"],
                     ["audio", "AUDIO"], ["refs", "LUNA_H3_REFS"], ["timeline", "LUNA_TIMELINE"],
-                    ["video", "IMAGE"], ["frames", "INT"]];
+                    ["video", "IMAGE"], ["frames", "INT"], ["overlap", "INT"]];
 const FIXED = FIXED_OUTS.length;
 
 // The migration is one rule, not one step per release: a saved node keeps the
 // fixed outputs it was saved with (everything before its image_1) and gets every
 // fixed output it lacks inserted before image_1, at that output's own index in
 // FIXED_OUTS. image_1 then sits at FIXED whatever the save: old saves (4 fixed,
-// image_1 at slot 4) and v3 saves (7 fixed, image_1 at slot 7) both end with
-// image_1 at slot 9; a node that already has all nine is left alone. Every link
+// image_1 at slot 4), v3 saves (7 fixed) and v4 saves (9 fixed) all end with
+// image_1 at slot 10; a node that already has all ten is left alone. Every link
 // leaving image_1 or higher is moved by the number of slots inserted. The saved
 // fixed outputs are a prefix of FIXED_OUTS, so they keep their numbers.
 const savedFixedCount = (outputs) => {
@@ -859,7 +859,7 @@ const savedFixedCount = (outputs) => {
 // workflow JSON before the graph is configured: the missing fixed slots go in
 // before image_1 and every link leaving image_1 or higher of an old
 // Luna-H3-AssetLoader moves up by the number inserted. Root graph and subgraph
-// definitions alike. A migrated save has image_1 at slot 9, so it is never moved twice.
+// definitions alike. A migrated save has image_1 at slot 10, so it is never moved twice.
 function migrateWorkflowJSON(data) {
     const moved = [];
     const fixGraph = (g, where) => {
@@ -2011,7 +2011,8 @@ function buildUI(node) {
                 commit({ position: "shot", song_start: +start.toFixed(6), shot: 1, duration: +dur.toFixed(6) });
             } else commit({ position: "free", start: +winStart().toFixed(6) });
         });
-        seg($(".ov"), [[5, "5 frames"], [22, "22 frames"], [39, "39 frames"]], Number(card.overlap), (v) => commit({ overlap: v }));
+        seg($(".ov"), [[22, "22"], [39, "39"], [90, "90"], [141, "141"], [192, "192 frames"]],
+            Number(card.overlap), (v) => commit({ overlap: v }));
         seg($(".fill"), [["silence", "Silence"], ["loop", "Loop the song"]], card.fill, (v) => commit({ fill: v }));
         seg($(".snap"), [["off", "Off"], ["h3", `${targetOf(media).gridText} shot lengths`]], card.snap, (v) => {
             commit({ snap: v, duration: v === "h3" && dur > 0 ? snapSeconds(dur) : dur });

@@ -1,9 +1,10 @@
 # Luna-MinimaxH3
 
-The nodes for **MiniMax H3** in ComfyUI, thirteen in one pack: the canvas and AV-latent nodes H3 needs and does not
+The nodes for **MiniMax H3** in ComfyUI, seventeen in one pack: the canvas and AV-latent nodes H3 needs and does not
 ship, one loader for every H3 reference (and a lighter loader for pictures and a song), a shot list that plans scenes
-over one song, a scene loop that renders a whole music video in one queue with guide keyframes, and a
-two-resolution sampler (low-resolution pass, lift, full-resolution pass) in one node.
+over one song, a scene loop that renders a whole music video in one queue with guide keyframes, a
+two-resolution sampler (low-resolution pass, lift, full-resolution pass) in one node, and a clip chain where every clip
+continues the one before over 22 to 192 locked frames.
 
 Every node's id is its display name, and every node sits in the category `Luna-MinimaxH3`.
 Each node has an (i) help button and a chevron that folds the settings away.
@@ -30,6 +31,10 @@ builder also uses the Beta 2.0 workflow nodes (comfyui-vrgamedevgirl); the other
 - **Luna-H3-GuideClip**: A CLIP that also shows the guide frames to the VLM.
 - **Luna-H3-LoopEnd**: Saves the scene's frames, audio and latent; runs the next scene.
 - **Luna-H3-Sampler**: Two-resolution H3 audio+video sampling in one node (see below).
+- **Luna-H3-Chain**: Many clips in one queue on a VHS Meta Batch Manager; clip number, seed and song start per clip.
+- **Luna-H3-ChainContinue**: Puts the end of the clip before at the start of this clip's latent, locked.
+- **Luna-H3-ChainRemember**: Saves the end of this clip, full size and pass 1, for the next clip.
+- **Luna-H3-ChainJoin**: Cuts the copied frames off and gathers the sound into one video.
 
 ## Replaces
 

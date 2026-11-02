@@ -34,12 +34,13 @@ import { registerLunaCollapse } from "./luna_collapse.mjs";
 
 // The ⓘ on the title bar. Content is each node's own description plus its input
 // tooltips (and, for Luna-H3-AssetLoader, its output tooltips), so there is no
-// separate help file to keep up to date. All 13 nodes have it.
+// separate help file to keep up to date. All 17 nodes have it.
 registerLunaHelp(app, [
     "Luna-H3-Canvas", "Luna-H3-ConcatAVLatent", "Luna-H3-ReferenceLoader", "Luna-H3-AssetLoader",
     "Luna-H3-RefsOut", "Luna-H3-ShotList", "Luna-H3-LoopStart", "Luna-H3-LoopScene",
     "Luna-H3-LoopProfile", "Luna-H3-GuideApply", "Luna-H3-GuideClip", "Luna-H3-LoopEnd",
-    "Luna-H3-Sampler",
+    "Luna-H3-Sampler", "Luna-H3-Chain", "Luna-H3-ChainContinue", "Luna-H3-ChainRemember",
+    "Luna-H3-ChainJoin",
 ], "LunaMinimaxH3.Help");
 
 // The chevron beside it folds the settings away, leaving the sockets and whatever the
@@ -51,5 +52,6 @@ registerLunaCollapse(app, [
     "Luna-H3-Canvas", "Luna-H3-ConcatAVLatent", "Luna-H3-ReferenceLoader", "Luna-H3-AssetLoader",
     "Luna-H3-RefsOut", "Luna-H3-ShotList", "Luna-H3-LoopStart", "Luna-H3-LoopScene",
     "Luna-H3-LoopProfile", "Luna-H3-GuideApply", "Luna-H3-GuideClip", "Luna-H3-LoopEnd",
-    "Luna-H3-Sampler",
+    "Luna-H3-Sampler", "Luna-H3-Chain", "Luna-H3-ChainContinue", "Luna-H3-ChainRemember",
+    "Luna-H3-ChainJoin",
 ], "LunaMinimaxH3.Collapse");

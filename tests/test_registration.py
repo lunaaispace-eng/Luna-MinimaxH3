@@ -1,4 +1,4 @@
-"""The pack registers exactly its 13 nodes, node id = display name, one category, and every
+"""The pack registers exactly its 17 nodes, node id = display name, one category, and every
 frontend file and kit entry names a registered id.
 
     E:/ComfyUI-Easy-Install/python_embeded/python.exe -m pytest tests
@@ -19,7 +19,8 @@ MEDIA_TOOLS_WEB = os.environ.get("LUNA_MEDIA_TOOLS_WEB", r"D:\Claude\Luna-Media-
 IDS = ["Luna-H3-Canvas", "Luna-H3-ConcatAVLatent", "Luna-H3-ReferenceLoader", "Luna-H3-AssetLoader",
        "Luna-H3-RefsOut", "Luna-H3-ShotList", "Luna-H3-LoopStart", "Luna-H3-LoopScene",
        "Luna-H3-LoopProfile", "Luna-H3-GuideApply", "Luna-H3-GuideClip", "Luna-H3-LoopEnd",
-       "Luna-H3-Sampler"]
+       "Luna-H3-Sampler", "Luna-H3-Chain", "Luna-H3-ChainContinue", "Luna-H3-ChainRemember",
+       "Luna-H3-ChainJoin"]
 
 
 def load_pack():
@@ -49,7 +50,7 @@ class RegistrationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.pack = load_pack()
 
-    def test_thirteen_ids(self):
+    def test_seventeen_ids(self):
         self.assertEqual(sorted(self.pack.NODE_CLASS_MAPPINGS), sorted(IDS))
 
     def test_id_is_display_name(self):
