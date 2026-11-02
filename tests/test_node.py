@@ -22,9 +22,9 @@ DMAD = "MiniMaxH3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
 
 INPUT_ORDER = [
     "model", "positive", "negative", "vae", "latent_image",
-    "lora_low", "strength_low", "shift_low", "audio_shift_low", "sampler_low", "cfg_low",
-    "lora_high", "strength_high", "shift_high", "audio_shift_high", "sampler_high", "cfg_high",
-    "scheduler", "total_steps", "transition", "highres_denoise", "noise_seed",
+    "lora_low", "strength_low", "shift_low", "audio_shift_low", "sampler_low", "cfg_low", "scheduler_low",
+    "lora_high", "strength_high", "shift_high", "audio_shift_high", "sampler_high", "cfg_high", "scheduler_high",
+    "total_steps", "transition", "highres_denoise", "noise_seed",
     "lowres_scale", "upscaler_model", "rho", "w_min", "w_max",
     "low_res_head", "sigmas_low", "sigmas_high", "high_res_model", "positive_low", "negative_low",
 ]
@@ -69,8 +69,9 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(by_id["audio_shift_high"].default, 3.0)
         self.assertEqual(by_id["cfg_low"].default, 1.0)
         self.assertEqual(by_id["cfg_high"].default, 1.0)
-        self.assertEqual(by_id["scheduler"].options, list(comfy.samplers.SCHEDULER_NAMES))
-        self.assertEqual(by_id["scheduler"].default, "simple")
+        for name in ("scheduler_low", "scheduler_high"):
+            self.assertEqual(by_id[name].options, list(comfy.samplers.SCHEDULER_NAMES))
+            self.assertEqual(by_id[name].default, "simple")
         self.assertEqual(by_id["total_steps"].default, 12)
         self.assertEqual((by_id["total_steps"].min, by_id["total_steps"].max), (1, 200))
         self.assertEqual(by_id["transition"].default, 8)
@@ -168,7 +169,8 @@ class NodeTests(unittest.TestCase):
             audio_shift_high=3.0,
             sampler_high=sampler("euler"),
             cfg_high=1.0,
-            scheduler="simple",
+            scheduler_low="simple",
+            scheduler_high="simple",
             total_steps=4,
             transition=2,
             highres_denoise=1.0,
@@ -196,8 +198,8 @@ class NodeTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(streams(result[0])[1]).all())
         text = result.ui.as_dict()["text"][0]
         self.assertIn("pass 1: steps 1-2 (low) / pass 2: steps 3-4 (high)", text)
-        self.assertIn("pass 1: none × 0.80, shift 12.0 / 3.0, sigmas", text)
-        self.assertIn("pass 2: none × 0.80, shift 5.0 / 2.0, sigmas", text)
+        self.assertIn("pass 1: none × 0.80, simple, shift 12.0 / 3.0, sigmas", text)
+        self.assertIn("pass 2: none × 0.80, simple, shift 5.0 / 2.0, sigmas", text)
         self.assertIn("hand-over sigma", text)
         self.assertNotIn("no recipe", text)
         self.assertEqual(model.get_model_object("model_sampling").shift, 12.0)
@@ -226,6 +228,37 @@ class NodeTests(unittest.TestCase):
             self.assertEqual(options["minimax_h3_sigma_shift_audio"], audio)
         self.assertIsNone(seen["denoise"])
         self.assertIsNot(seen["low"], seen["high"])
+
+    def test_each_pass_takes_its_sigmas_from_its_own_scheduler(self):
+        seen = {}
+        real = luna_sampler.two_pass_sample
+
+        def spy(*args, **kwargs):
+            seen["low_model"], seen["high_model"] = args[0], kwargs["high_res_model"]
+            seen["scheduler_high"] = kwargs["scheduler_high"]
+            return real(*args, **kwargs)
+
+        with patch("luna_sampler.two_pass_sample", spy):
+            result = LunaH3Sampler.execute(**self.kwargs(
+                scheduler_low="linear_quadratic", scheduler_high="beta", total_steps=8, transition=5))
+        text = result.ui.as_dict()["text"][0]
+        self.assertEqual(seen["scheduler_high"], "beta")
+        expected_low = luna_sampler.arm_sigmas(seen["low_model"], "linear_quadratic", 8, 5, low=True)
+        expected_high = luna_sampler.arm_sigmas(seen["high_model"], "beta", 8, 5, low=False)
+        self.assertIn("pass 1: none × 0.80, linear_quadratic, shift", text)
+        self.assertIn("pass 2: none × 0.80, beta, shift", text)
+        self.assertIn("sigmas " + luna_sampler._sigma_text(expected_low), text)
+        self.assertIn("sigmas " + luna_sampler._sigma_text(expected_high), text)
+        simple_high = luna_sampler.arm_sigmas(seen["high_model"], "simple", 8, 5, low=False)
+        self.assertFalse(torch.equal(expected_high, simple_high))
+
+    def test_recipe_scheduler_is_checked_per_pass(self):
+        with patch("luna_sampler.check_values", return_value=([], [])) as check, \
+                patch("luna_sampler.two_pass_sample", lambda *a, **k: (a[4], a[4])):
+            LunaH3Sampler.execute(**self.kwargs(scheduler_low="linear_quadratic", scheduler_high="beta"))
+        passes = check.call_args.args[0]["passes"]
+        self.assertEqual([arm["scheduler"] for arm in passes], ["linear_quadratic", "beta"])
+        self.assertNotIn("scheduler", check.call_args.args[0])
 
     def test_high_res_model_builds_pass_2_and_empty_uses_model(self):
         real = luna_sampler.two_pass_sample

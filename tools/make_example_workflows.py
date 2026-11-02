@@ -53,7 +53,7 @@ def sampler_inputs(model, positive, negative, vae, latent, lora, **extra):
         model=model, positive=positive, negative=negative, vae=vae, latent_image=latent,
         lora_low=lora, strength_low=0.6, shift_low=12.0, audio_shift_low=3.0, sampler_low=["20", 0], cfg_low=1.0,
         lora_high=lora, strength_high=0.8, shift_high=12.0, audio_shift_high=3.0, sampler_high=["21", 0],
-        cfg_high=1.0, scheduler="simple", total_steps=12, transition=9, highres_denoise=1.0, noise_seed=1111,
+        cfg_high=1.0, scheduler_low="simple", scheduler_high="simple", total_steps=12, transition=9, highres_denoise=1.0, noise_seed=1111,
         lowres_scale=0.5, upscaler_model=UPSCALER, rho=0.0, w_min=0.5, w_max=1.0,
     )
     inputs.update(extra)

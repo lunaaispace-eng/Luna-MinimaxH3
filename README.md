@@ -63,10 +63,12 @@ pass 2 refines detail.
 
 - `model`, `positive`, `negative`, `vae`, `latent_image` (H3 AV latent at final size; mask 0 keeps a region, an audio
   mask of 0 locks the song).
-- Per pass: `lora_*`, `strength_*`, `shift_*`, `audio_shift_*`, `sampler_*`, `cfg_*` (`low` = pass 1, `high` = pass 2).
-  Samplers come in as `SAMPLER` sockets, so each pass can use any sampler.
-- Shared: `scheduler`, `total_steps`, `transition`, `highres_denoise`, `noise_seed`, `lowres_scale`, `upscaler_model`,
-  `rho`, `w_min`, `w_max`.
+- Per pass: `lora_*`, `strength_*`, `shift_*`, `audio_shift_*`, `sampler_*`, `cfg_*`, `scheduler_*` (`low` = pass 1,
+  `high` = pass 2). Samplers come in as `SAMPLER` sockets, so each pass can use any sampler. Pass 1 takes its first
+  `transition` steps from a schedule built with `scheduler_low`, pass 2 the rest from one built with `scheduler_high`.
+  A workflow saved with the older single `scheduler` opens with that scheduler in both.
+- Shared: `total_steps`, `transition`, `highres_denoise`, `noise_seed`, `lowres_scale`, `upscaler_model`, `rho`, `w_min`,
+  `w_max`.
 - Optional: `low_res_head` (previous scene's `low_res_latent`), `sigmas_low`, `sigmas_high`, `high_res_model`,
   `positive_low`, `negative_low`.
 - Outputs: `latent` (full size) and `low_res_latent` (pass 1 on the low grid, for the next scene's `low_res_head`).

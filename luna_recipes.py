@@ -34,7 +34,7 @@ COMPARE_FIELDS = (
     "scheduler",
     "cfg",
 )
-ARM_FIELDS = {"strength", "shift", "audio_shift", "sampler", "cfg"}
+ARM_FIELDS = {"strength", "shift", "audio_shift", "sampler", "scheduler", "cfg"}
 _FLOAT_FIELDS = {"strength", "shift", "audio_shift", "cfg"}
 
 _ROUTES_READY = False
@@ -87,6 +87,9 @@ def _equal(left, right):
 
 def _actual(values, arm, field):
     if field in ARM_FIELDS:
+        # A run built before each pass had its own scheduler gives one shared `scheduler`.
+        if field == "scheduler" and arm.get(field) is None:
+            return values.get(field)
         return arm.get(field)
     return values.get(field)
 
@@ -94,10 +97,11 @@ def _actual(values, arm, field):
 def check_values(values: dict, recipes: dict | None = None) -> tuple[list[str], list[str]]:
     """Return `(errors, warnings)` for one run.
 
-    `values` has `total_steps`, `transition`, `scheduler` and `passes` (pass 1, then
-    pass 2). Each pass has `lora`, `strength`, `shift`, `audio_shift`, `cfg` and
-    `sampler` (the sampler name, or None when the object does not say). `none` is
-    not a LoRA. An unknown file is a warning, not an error.
+    `values` has `total_steps`, `transition` and `passes` (pass 1, then pass 2). Each
+    pass has `lora`, `strength`, `shift`, `audio_shift`, `cfg`, `scheduler` and
+    `sampler` (the sampler name, or None when the object does not say). A shared
+    `scheduler` in `values` stands in for a pass that has none. `none` is not a LoRA.
+    An unknown file is a warning, not an error.
     """
     if recipes is None:
         recipes = load_recipes()

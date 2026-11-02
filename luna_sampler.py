@@ -32,7 +32,7 @@ else:
 DESCRIPTION = """\
 Pass 1 runs the first transition steps of one schedule at the low grid. Pass 2 runs the remaining steps at the full grid. Each pass clones the base model (pass 2 clones high_res_model when it is connected), loads its own LoRA and sets its own video and audio shift, then samples with its own sampler and CFG.
 
-Pass 1 inputs are lora_low, strength_low, shift_low, audio_shift_low, sampler_low and cfg_low. Pass 2 inputs are lora_high, strength_high, shift_high, audio_shift_high, sampler_high and cfg_high. scheduler, total_steps, transition, highres_denoise and noise_seed belong to the one shared schedule. lowres_scale, upscaler_model, rho, w_min and w_max belong to the lift. upscaler_model selects the learned H3 latent upscaler; none uses nearest. low_res_head is the previous scene's low-grid tail. sigmas_low and sigmas_high replace the computed schedules when they are connected.
+Pass 1 inputs are lora_low, strength_low, shift_low, audio_shift_low, sampler_low, cfg_low and scheduler_low. Pass 2 inputs are lora_high, strength_high, shift_high, audio_shift_high, sampler_high, cfg_high and scheduler_high. total_steps, transition, highres_denoise and noise_seed belong to the one shared schedule: pass 1 takes its first transition steps from its own scheduler, pass 2 the rest from its own. lowres_scale, upscaler_model, rho, w_min and w_max belong to the lift. upscaler_model selects the learned H3 latent upscaler; none uses nearest. low_res_head is the previous scene's low-grid tail. sigmas_low and sigmas_high replace the computed schedules when they are connected.
 
 Audio is one trajectory across both passes and finishes in pass 2, next to the full-size video. A locked song (audio mask 0) stays exact in both outputs. When sigmas_low ends at 0.01 or below, pass 1 has finished and pass 2 draws fresh noise for the audio too, as a native second pass does.
 
@@ -110,7 +110,7 @@ def _readout(low, high, sigmas_low, sigmas_high, total_steps, transition, highre
         lines.append(f"highres_denoise {float(highres_denoise):.2f}")
     for label, arm, sigmas in (("pass 1", low, sigmas_low), ("pass 2", high, sigmas_high)):
         lines.append(
-            f"{label}: {arm['lora']} × {float(arm['strength']):.2f}, "
+            f"{label}: {arm['lora']} × {float(arm['strength']):.2f}, {arm['scheduler']}, "
             f"shift {float(arm['shift']):.1f} / {float(arm['audio_shift']):.1f}, "
             f"sigmas {_sigma_text(sigmas)}"
         )
@@ -187,6 +187,12 @@ class LunaH3Sampler(io.ComfyNode):
                     tooltip="Pass 1 CFG. 1.0 is the distilled H3 setting.",
                 ),
                 io.Combo.Input(
+                    "scheduler_low",
+                    options=list(comfy.samplers.SCHEDULER_NAMES),
+                    default="simple",
+                    tooltip="Pass 1 scheduler. Pass 1 runs the first transition steps of a total_steps schedule built with this scheduler on its own shift.",
+                ),
+                io.Combo.Input(
                     "lora_high",
                     options=_lora_names(),
                     default="none",
@@ -226,10 +232,10 @@ class LunaH3Sampler(io.ComfyNode):
                     tooltip="Pass 2 CFG. 1.0 is the distilled H3 setting.",
                 ),
                 io.Combo.Input(
-                    "scheduler",
+                    "scheduler_high",
                     options=list(comfy.samplers.SCHEDULER_NAMES),
                     default="simple",
-                    tooltip="Scheduler for the one shared schedule. Each pass runs it on its own shift.",
+                    tooltip="Pass 2 scheduler. Pass 2 runs its steps of a total_steps schedule built with this scheduler on its own shift.",
                 ),
                 io.Int.Input(
                     "total_steps",
@@ -367,13 +373,14 @@ class LunaH3Sampler(io.ComfyNode):
         audio_shift_low,
         sampler_low,
         cfg_low,
+        scheduler_low,
         lora_high,
         strength_high,
         shift_high,
         audio_shift_high,
         sampler_high,
         cfg_high,
-        scheduler,
+        scheduler_high,
         total_steps,
         transition,
         highres_denoise,
@@ -397,6 +404,7 @@ class LunaH3Sampler(io.ComfyNode):
             "audio_shift": audio_shift_low,
             "sampler": _sampler_name(sampler_low),
             "cfg": cfg_low,
+            "scheduler": scheduler_low,
         }
         high_arm = {
             "lora": lora_high,
@@ -405,11 +413,11 @@ class LunaH3Sampler(io.ComfyNode):
             "audio_shift": audio_shift_high,
             "sampler": _sampler_name(sampler_high),
             "cfg": cfg_high,
+            "scheduler": scheduler_high,
         }
         errors, warnings = check_values({
             "total_steps": total_steps,
             "transition": transition,
-            "scheduler": scheduler,
             "passes": [low_arm, high_arm],
         })
         if errors:
@@ -425,9 +433,9 @@ class LunaH3Sampler(io.ComfyNode):
         high_base = model if high_res_model is None else high_res_model
         high_model = _arm_model(high_base, lora_high, strength_high, shift_high, audio_shift_high, loaded)
         used_low = sigmas_low if sigmas_low is not None else arm_sigmas(
-            low_model, scheduler, total_steps, transition, low=True)
+            low_model, scheduler_low, total_steps, transition, low=True)
         used_high = sigmas_high if sigmas_high is not None else arm_sigmas(
-            high_model, scheduler, total_steps, transition, low=False, denoise=denoise)
+            high_model, scheduler_high, total_steps, transition, low=False, denoise=denoise)
         latent, low_latent = two_pass_sample(
             low_model,
             positive,
@@ -436,7 +444,7 @@ class LunaH3Sampler(io.ComfyNode):
             latent_image,
             sampler_low,
             sampler_high,
-            scheduler,
+            scheduler_low,
             total_steps,
             transition,
             int(noise_seed),
@@ -447,6 +455,7 @@ class LunaH3Sampler(io.ComfyNode):
             float(w_min),
             float(w_max),
             high_res_model=high_model,
+            scheduler_high=scheduler_high,
             low_res_head=low_res_head,
             highres_denoise=denoise,
             sigmas_low=sigmas_low,

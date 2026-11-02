@@ -17,8 +17,39 @@ const WATCH = new Set([
     "shift_low", "shift_high",
     "audio_shift_low", "audio_shift_high",
     "cfg_low", "cfg_high",
-    "scheduler", "total_steps", "transition", "highres_denoise",
+    "scheduler_low", "scheduler_high",
+    "total_steps", "transition", "highres_denoise",
 ]);
+
+// A workflow saved before each pass had its own scheduler stores 21 widget values in this order. The new
+// node has 22, so ComfyUI's positional load shifts every value after cfg_low. Such a node is set again by
+// name, and its one scheduler goes to both passes.
+const SINGLE_SCHEDULER_ORDER = [
+    "lora_low", "strength_low", "shift_low", "audio_shift_low", "cfg_low",
+    "lora_high", "strength_high", "shift_high", "audio_shift_high", "cfg_high",
+    "scheduler", "total_steps", "transition", "highres_denoise", "noise_seed", "control_after_generate",
+    "lowres_scale", "upscaler_model", "rho", "w_min", "w_max",
+];
+
+function isSingleSchedulerLayout(values) {
+    return Array.isArray(values)
+        && values.length === SINGLE_SCHEDULER_ORDER.length
+        && typeof values[10] === "string"
+        && typeof values[17] === "string";
+}
+
+function migrateSingleScheduler(node, values) {
+    if (!isSingleSchedulerLayout(values)) return false;
+    SINGLE_SCHEDULER_ORDER.forEach((name, index) => {
+        if (name === "scheduler") {
+            setWidget(node, "scheduler_low", values[index]);
+            setWidget(node, "scheduler_high", values[index]);
+        } else {
+            setWidget(node, name, values[index]);
+        }
+    });
+    return true;
+}
 const FLOAT_FIELDS = new Set(["strength", "shift", "audio_shift", "cfg"]);
 const COMPARE_FIELDS = ["strength", "total_steps", "transition", "shift", "audio_shift", "scheduler", "cfg"];
 
@@ -118,7 +149,7 @@ function recipeNotes(node, recipes) {
             transition,
             shift: widgetValue(node, `shift_${side}`),
             audio_shift: widgetValue(node, `audio_shift_${side}`),
-            scheduler: widgetValue(node, "scheduler"),
+            scheduler: widgetValue(node, `scheduler_${side}`),
             cfg: widgetValue(node, `cfg_${side}`),
         };
         for (const field of COMPARE_FIELDS) {
@@ -255,8 +286,9 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== "Luna-H3-Sampler") return;
         const onConfigure = nodeType.prototype.onConfigure;
-        nodeType.prototype.onConfigure = function () {
+        nodeType.prototype.onConfigure = function (info) {
             const configured = onConfigure?.apply(this, arguments);
+            guard("migrate", () => migrateSingleScheduler(this, info?.widgets_values), false);
             this.size[0] = Math.max(Number(this.size[0]) || 0, MIN_WIDTH);
             return configured;
         };

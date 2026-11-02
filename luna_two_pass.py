@@ -162,9 +162,11 @@ def _sample(model, noise, latent, masks, nested, positive, negative, cfg, sample
 def two_pass_sample(low_res_model, positive, negative, vae, latent_image, sampler_low, sampler_high, scheduler,
                     total_steps, transition, noise_seed, cfg_low, cfg_high, lowres_scale, rho, w_min, w_max,
                     latent_lifter=None, high_res_model=None, low_res_head=None, highres_denoise=None,
-                    sigmas_low=None, sigmas_high=None, lift=None, positive_low=None, negative_low=None):
+                    sigmas_low=None, sigmas_high=None, lift=None, positive_low=None, negative_low=None,
+                    scheduler_high=None):
     """Return (latent, low_res_latent), both ComfyUI LATENT dicts in VAE space.
 
+    `scheduler` builds pass 1's sigmas; `scheduler_high` builds pass 2's and defaults to `scheduler`.
     `sigmas_low` / `sigmas_high` override the computed schedules. `lift` defaults to `luna_lift.lift_video`.
     `positive_low` / `negative_low` replace `positive` / `negative` in pass 1 only: conditioning built at pass 1's size.
     """
@@ -180,7 +182,8 @@ def two_pass_sample(low_res_model, positive, negative, vae, latent_image, sample
     if sigmas_low is None:
         sigmas_low = arm_sigmas(low_res_model, scheduler, total_steps, transition, low=True)
     if sigmas_high is None:
-        sigmas_high = arm_sigmas(high_model, scheduler, total_steps, transition, low=False, denoise=highres_denoise)
+        sigmas_high = arm_sigmas(high_model, scheduler_high or scheduler, total_steps, transition, low=False,
+                                 denoise=highres_denoise)
     _check_sigmas(sigmas_low, "sigmas_low")
     _check_sigmas(sigmas_high, "sigmas_high")
     if not 0.0 < float(sigmas_low[-1]) < 1.0:

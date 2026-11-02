@@ -40,7 +40,7 @@ def build(g, sigmas_node="150", lean=False, size=(1920, 1088)):
         model=["126", 0], positive=["110", 1], negative=["200", 0], vae=["11", 0], latent_image=["80", 0],
         lora_low=TURBO_FL2V, strength_low=0.6, shift_low=12.0, audio_shift_low=3.0, sampler_low=["201", 0],
         cfg_low=1.0, lora_high=TURBO_FL2V, strength_high=0.8, shift_high=12.0, audio_shift_high=3.0,
-        sampler_high=["202", 0], cfg_high=1.0, scheduler="simple", total_steps=12, transition=9,
+        sampler_high=["202", 0], cfg_high=1.0, scheduler_low="simple", scheduler_high="simple", total_steps=12, transition=9,
         highres_denoise=1.0, noise_seed=101, lowres_scale=0.5, upscaler_model=UPSCALER, rho=0.0, w_min=0.5,
         w_max=1.0)}
     for nid, key in (("10", "samples"), ("23", "samples"), ("138", "samples")):

@@ -120,7 +120,7 @@ def main(name, scratch, out, low_unet=None):
         "cfg_low": 1.0,
         "lora_high": LORA, "strength_high": 0.8, "shift_high": 12.0, "audio_shift_high": 3.0,
         "sampler_high": ["100", 0], "cfg_high": 1.0,
-        "scheduler": "simple", "total_steps": 12, "transition": 9, "highres_denoise": 1.0,
+        "scheduler_low": "simple", "scheduler_high": "simple", "total_steps": 12, "transition": 9, "highres_denoise": 1.0,
         "noise_seed": old["seed"], "lowres_scale": old["lowres_scale"], "upscaler_model": UPSCALER,
         "rho": old["rho"], "w_min": old["w_min"], "w_max": old["w_max"]}}
     if chained:
