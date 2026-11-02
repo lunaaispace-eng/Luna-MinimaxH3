@@ -1001,6 +1001,7 @@
         12,
         3,
         1,
+        "simple",
         "minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors",
         0.8,
         12,

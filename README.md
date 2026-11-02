@@ -73,6 +73,35 @@ pass 2 refines detail.
   `positive_low`, `negative_low`.
 - Outputs: `latent` (full size) and `low_res_latent` (pass 1 on the low grid, for the next scene's `low_res_head`).
 
+### How to use it
+
+**Where pass 2 starts**
+- `sigmas_high` empty and `highres_denoise` 1: pass 2 continues the same schedule from the transition.
+- `highres_denoise` below 1: pass 2 restarts lower and keeps more of pass 1's picture.
+- `sigmas_high` connected (ManualSigmas): pass 2 runs exactly that list; `highres_denoise` and `scheduler_high` are not used,
+  although the readout still shows the denoise. `sigmas_low` does the same for pass 1 and must end above 0 (for example 0.001).
+- With lists connected, keep `total_steps` and `transition` equal to their step counts: the node still checks them.
+- `linear_quadratic` is a fixed curve that ignores shift. With many steps its last steps are all low, so it suits pass 2 only with
+  few steps (8 steps, transition 5: pass 2 starts at 0.909).
+
+**LoRAs**
+- One speed LoRA per pass, in `lora_low` / `lora_high`. Pika at 1.0.
+- `lora_high` loads on top of `high_res_model`: a LoRA in both loads twice.
+- Pass 1's LoRA sets the motion. Without a speed LoRA, a few steps in pass 1 break the picture.
+
+**Custom sigmas**
+
+| List | Use |
+|---|---|
+| `1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333, 0.001` | Pika's 6 trained steps in pass 1 |
+| `0.8, 0.571429, 0.333333, 0.0` | Pika's last 3 steps in pass 2 |
+| `0.7, 0.494118, 0.0` | refiner pass (Kijai, Trent) |
+| `0.909375, 0.857143, 0.666667, 0.0` | refiner pass (NVlabs) |
+
+**Song recipe** (tested on one scene, 1920x1088, 8.7 s, about 200 s on an RTX 4090): pass 1 `pika_h3_flex_ref2va_v1_avg_rank_55`
+at 1.0, pass 2 `pika_h3_flex_fl2va_v1` at 1.0, `lcm` and `linear_quadratic` in both, `total_steps` 8, `transition` 5, `lowres_scale`
+0.5, Sol-Attn tau 1.0. For generated sound, `lowres_scale` 0.7 at 1920x1088.
+
 `luna_recipes.json` holds tested values per LoRA; picking a LoRA fills that pass's strength, steps and shifts.
 
 `high_res_model` (optional): not connected, pass 2 uses `model`. Connected, pass 2 clones it and adds its own LoRA and
