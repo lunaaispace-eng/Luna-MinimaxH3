@@ -5,6 +5,10 @@ last `overlap` frames of the clip before into its own start and locks them (nois
 where that clip ended. Join cuts the copied frames off again and gathers the sound, and the batch manager's VHS Video
 Combine writes one video on the last clip.
 
+The song settings live on Luna-H3-AssetLoader's sound card (2026-11-03, Peter: "it needs to be the other way around, set it
+in asset loader"): Luna-H3-Chain -> the loader's `chain` input gives only the clip number; the card's Start, Shot and
+overlap stay the user's. The loader's `overlap` output feeds ChainContinue, ChainRemember and ChainJoin.
+
 Overlap: 22, 39, 90, 141 or 192 frames, all 5 + 17k, so the copied run is 2 + 5k whole video latents starting on a
 one-frame latent. 39 + 51k frames also land on whole 40 Hz audio steps (39 frames = 65); 22 frames are 36.67, so 22 is
 allowed only with the song locked, when the previous clip's sound is not copied. A mask already on the latent (a
@@ -97,6 +101,22 @@ def _masks(latent, video, audio):
     return out
 
 
+def _overlap(chain, overlap, who):
+    """The overlap from Luna-H3-AssetLoader's sound card, checked against this chain."""
+    if overlap is None:
+        raise ValueError(f"{LOG} {who}: connect Luna-H3-AssetLoader overlap to overlap.")
+    n = int(overlap)
+    if str(n) not in OVERLAPS:
+        raise ValueError(f"{LOG} {who}: the overlap is {n} frames; set the sound card's overlap on Luna-H3-AssetLoader to "
+                         f"one of {', '.join(OVERLAPS)} (a song must be loaded on it).")
+    if n >= chain["frames"]:
+        raise ValueError(f"{LOG} {who}: the overlap ({n} frames) must be shorter than a clip ({chain['frames']} frames).")
+    if n == LOCKED_ONLY and not chain["song_locked"]:
+        raise ValueError(f"{LOG} {who}: 22 frames are 36.67 audio steps, so the previous clip's sound cannot be copied "
+                         f"exactly. Lock the song (song_locked on) or set the overlap to 39, 90, 141 or 192.")
+    return n
+
+
 def _advance(manager, clips, prompt, unique_id):
     """This run's clip index, from the batch manager's requeue count (TrentNodes H3ChainStep)."""
     uid = str(prompt[str(unique_id)]["inputs"]["meta_batch"][0])
@@ -120,21 +140,20 @@ class LunaH3Chain:
     DESCRIPTION = (
         "Makes one video from several H3 clips in one queue. Connect a VHS Meta Batch Manager (its frames_per_batch is "
         "every clip's length, on the 17k+5 grid), set how many clips, and queue once. Every clip after the first "
-        "starts with the last `overlap` frames of the clip before, locked, so the picture carries on.\n\n"
-        "Wire chain -> Luna-H3-ChainContinue, Luna-H3-ChainRemember and Luna-H3-ChainJoin; seed -> the sampler's "
-        "noise_seed; song_start -> Luna-H3-AssetLoader song_start; seconds -> Luna-H3-AssetLoader seconds and "
-        "Luna-H3-Canvas; prompt -> the prompt writer."
+        "starts with the last frames of the clip before, locked, so the picture carries on.\n\n"
+        "The song start, the first segment and the overlap are set on Luna-H3-AssetLoader's sound card (Position: By "
+        "shot number). Wire chain -> Luna-H3-AssetLoader chain, Luna-H3-ChainContinue, Luna-H3-ChainRemember and "
+        "Luna-H3-ChainJoin; the loader's overlap -> the same three; seed -> the sampler's noise_seed; prompt -> the "
+        "prompt writer."
     )
     CATEGORY = "Luna-MinimaxH3"
     FUNCTION = "run"
-    RETURN_TYPES = (CHAIN, "INT", "FLOAT", "INT", "INT", "INT", "FLOAT", "STRING", "BOOLEAN")
-    RETURN_NAMES = ("chain", "seed", "song_start", "shot", "overlap", "frames", "seconds", "prompt", "is_first_clip")
+    RETURN_TYPES = (CHAIN, "INT", "INT", "INT", "FLOAT", "STRING", "BOOLEAN")
+    RETURN_NAMES = ("chain", "seed", "clip", "frames", "seconds", "prompt", "is_first_clip")
     OUTPUT_TOOLTIPS = (
-        "Connect to Luna-H3-ChainContinue, Luna-H3-ChainRemember and Luna-H3-ChainJoin.",
+        "Connect to Luna-H3-AssetLoader chain, Luna-H3-ChainContinue, Luna-H3-ChainRemember and Luna-H3-ChainJoin.",
         "Seed of this clip: seed + clip index. Connect to Luna-H3-Sampler noise_seed.",
-        "Where this clip starts in the song, in seconds. Connect to Luna-H3-AssetLoader song_start.",
-        "This clip's number, from 1. Connect to Luna-H3-AssetLoader shot.",
-        "Frames each clip shares with the one before.",
+        "This clip's number in the chain, from 1.",
         "Every clip's length in frames, from the batch manager.",
         "Every clip's length in seconds, frames / 24. Connect to Luna-H3-AssetLoader seconds or Luna-H3-Canvas.",
         "first_prompt on clip 1, later_prompt on every other clip.",
@@ -152,14 +171,10 @@ class LunaH3Chain:
                     "tooltip": "How many clips this run makes."}),
                 "seed": ("INT", {"default": 12345, "min": 0, "max": 0xffffffffffffffff,
                     "tooltip": "Seed of clip 1; each later clip adds 1."}),
-                "overlap": (list(OVERLAPS), {"default": "22",
-                    "tooltip": "Frames each clip copies from the end of the clip before. 22 only with song_locked: "
-                               "22 frames are not a whole number of H3 audio steps, 39, 90, 141 and 192 are."}),
                 "song_locked": ("BOOLEAN", {"default": True,
                     "tooltip": "On: the song is locked in every clip's latent (audio mask 0), so the previous clip's sound "
-                               "is not copied. Off: H3 makes the sound, and the head copies the previous clip's sound too."}),
-                "song_offset": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100000.0, "step": 0.01,
-                    "tooltip": "Where clip 1 starts in the song, in seconds."}),
+                               "is not copied; the overlap may be 22. Off: H3 makes the sound, the head copies the "
+                               "previous clip's sound too, and the overlap must be 39 or more."}),
             },
             "optional": {
                 "first_prompt": ("STRING", {"forceInput": True, "tooltip": "Prompt for clip 1."}),
@@ -176,29 +191,20 @@ class LunaH3Chain:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def run(self, meta_batch, clips, seed, overlap, song_locked, song_offset, prompt=None, unique_id=None,
+    def run(self, meta_batch, clips, seed, song_locked, prompt=None, unique_id=None,
             first_prompt=None, later_prompt=None, clips_already_made=0):
         frames = int(meta_batch.frames_per_batch)
-        n = int(overlap)
-        if str(n) not in OVERLAPS:
-            raise ValueError(f"{LOG} overlap {n}: use one of {', '.join(OVERLAPS)}.")
         if not on_grid(frames):
             raise ValueError(f"{LOG} the batch manager's frames_per_batch is {frames}; H3 clips are 17k+5 frames "
                              f"(124, 141, 209, 243, 328, 362 ...).")
-        if n >= frames:
-            raise ValueError(f"{LOG} the overlap ({n} frames) must be shorter than a clip ({frames} frames).")
-        if n == LOCKED_ONLY and not song_locked:
-            raise ValueError(f"{LOG} 22 frames are 36.67 audio steps, so the previous clip's sound cannot be copied "
-                             f"exactly. Lock the song (song_locked on) or use 39, 90, 141 or 192.")
         step = _advance(meta_batch, int(clips), prompt, unique_id)
         clip = int(clips_already_made) + step
-        chain = {"clip": clip, "first_clip": int(clips_already_made), "overlap": n, "song_locked": bool(song_locked),
+        chain = {"clip": clip, "first_clip": int(clips_already_made), "song_locked": bool(song_locked),
                  "frames": frames, "manager": meta_batch}
-        start = float(song_offset) + clip * (frames - n) / FPS
         first = clip == 0
         text = first_prompt if first or later_prompt is None else later_prompt
-        logging.info("%s clip %d of %d, song from %.3f s", LOG, clip + 1, int(clips_already_made) + int(clips), start)
-        return (chain, (int(seed) + clip) % (1 << 64), start, clip + 1, n, frames, frames / FPS,
+        logging.info("%s clip %d of %d", LOG, clip + 1, int(clips_already_made) + int(clips))
+        return (chain, (int(seed) + clip) % (1 << 64), clip + 1, frames, frames / FPS,
                 ExecutionBlocker(None) if text is None else text, first)
 
 
@@ -225,6 +231,8 @@ class LunaH3ChainContinue:
         return {
             "required": {
                 "chain": (CHAIN, {"tooltip": "From Luna-H3-Chain."}),
+                "overlap": ("INT", {"forceInput": True,
+                    "tooltip": "Frames each clip shares with the one before: Luna-H3-AssetLoader overlap (its sound card)."}),
                 "latent": ("LATENT", {"tooltip": "This clip's H3 audio+video latent before sampling, after the song lock."}),
                 "name": ("STRING", {"default": "chain",
                     "tooltip": "Same name as on Luna-H3-ChainRemember. The endings sit in output/luna_h3_chain/<name>/."}),
@@ -238,13 +246,15 @@ class LunaH3ChainContinue:
             },
         }
 
-    def continue_clip(self, chain, latent, name, keep_look_of_clip_1, first_image=None, vae=None):
+    def continue_clip(self, chain, latent, name, keep_look_of_clip_1, first_image=None, vae=None, overlap=None):
         who = "Luna-H3-ChainContinue"
+        n = _overlap(chain, overlap, who)
         if chain["song_locked"]:
             video, audio = _streams(latent, who)
             if not torch.all(_masks(latent, video, audio)[1] == 0):
                 raise ValueError(f"{LOG} {who}: Luna-H3-Chain says the song is locked, but this latent's sound is not "
-                                 f"(its audio mask is not 0). Lock the song, or turn song_locked off and use 39 or more.")
+                                 f"(its audio mask is not 0). Lock the song, or turn song_locked off and set the overlap "
+                                 f"to 39 or more.")
         if chain["clip"] == 0:
             return (latent, None, ExecutionBlocker(None) if first_image is None else first_image)
 
@@ -255,7 +265,6 @@ class LunaH3ChainContinue:
         import safetensors.torch
         data = safetensors.torch.load_file(path, device="cpu")
         video, audio = _streams(latent, who)
-        n = int(chain["overlap"])
         v_n, a_n = video_steps(n), audio_steps(n)
         src_video = data["video"]
         if src_video.shape[2] < v_n or v_n >= video.shape[2]:
@@ -319,18 +328,23 @@ class LunaH3ChainRemember:
         return {
             "required": {
                 "chain": (CHAIN, {"tooltip": "From Luna-H3-Chain."}),
+                "overlap": ("INT", {"forceInput": True,
+                    "tooltip": "Frames each clip shares with the one before: Luna-H3-AssetLoader overlap (its sound card)."}),
                 "latent": ("LATENT", {"tooltip": "The sampled latent of this clip: Luna-H3-Sampler latent."}),
                 "name": ("STRING", {"default": "chain", "tooltip": "Same name as on Luna-H3-ChainContinue."}),
             },
             "optional": {
                 "low_res_latent": ("LATENT", {
                     "tooltip": "Luna-H3-Sampler low_res_latent. Saved, it becomes the next clip's low_res_head."}),
+                "save_whole_clip": ("BOOLEAN", {"default": False,
+                    "tooltip": "Also save this clip's whole latent (video, audio, low-res video) as whole_NNNN.latent "
+                               "beside the endings, about 60 MB per 8 s clip at 2 MP, to decode or rejoin it later."}),
             },
         }
 
-    def remember(self, chain, latent, name, low_res_latent=None):
+    def remember(self, chain, latent, name, low_res_latent=None, save_whole_clip=False, overlap=None):
         video, audio = _streams(latent, "Luna-H3-ChainRemember")
-        n = int(chain["overlap"])
+        n = _overlap(chain, overlap, "Luna-H3-ChainRemember")
         path = ending_path(name, chain["clip"])
         folder = os.path.dirname(path)
         if chain["clip"] == chain["first_clip"] == 0:
@@ -346,6 +360,11 @@ class LunaH3ChainRemember:
             tensors["low_video"] = low[:, :, -video_steps(n):].detach().cpu().contiguous()
         import safetensors.torch
         safetensors.torch.save_file(tensors, path)
+        if save_whole_clip:
+            whole = {"video": video.detach().cpu().contiguous(), "audio": audio.detach().cpu().contiguous()}
+            if low_res_latent is not None:
+                whole["low_video"] = low.detach().cpu().contiguous()
+            safetensors.torch.save_file(whole, os.path.join(folder, "whole_%04d.latent" % chain["clip"]))
         return ([path],)
 
 
@@ -354,16 +373,19 @@ class LunaH3ChainJoin:
         "Cuts the copied frames off every clip after the first and keeps each clip's sound for the end, so the batch "
         "manager's VHS Video Combine gets one continuous video and one soundtrack.\n\nWire the decoded frames into "
         "images, the clip's sound (the song window from Luna-H3-AssetLoader audio, or the decoded audio) into audio, "
-        "Luna-H3-ChainRemember saved into saved; images and audio -> VHS Video Combine."
+        "Luna-H3-ChainRemember saved into saved; images and audio -> VHS Video Combine (meta_batch). To keep every "
+        "clip on disk, so a stopped run loses nothing: images and clip_audio -> a second VHS Video Combine without "
+        "meta_batch."
     )
     CATEGORY = "Luna-MinimaxH3"
     FUNCTION = "join"
     OUTPUT_NODE = True
-    RETURN_TYPES = ("IMAGE", "AUDIO")
-    RETURN_NAMES = ("images", "audio")
+    RETURN_TYPES = ("IMAGE", "AUDIO", "AUDIO")
+    RETURN_NAMES = ("images", "audio", "clip_audio")
     OUTPUT_TOOLTIPS = (
         "This clip without the copied frames. Connect to VHS Video Combine images.",
         "The whole soundtrack on the last clip. Connect to the same VHS Video Combine audio.",
+        "This clip's own sound, cut to images, on every clip. Connect to a per-clip VHS Video Combine (no meta_batch).",
     )
 
     @classmethod
@@ -371,6 +393,8 @@ class LunaH3ChainJoin:
         return {
             "required": {
                 "chain": (CHAIN, {"tooltip": "From Luna-H3-Chain."}),
+                "overlap": ("INT", {"forceInput": True,
+                    "tooltip": "Frames each clip shares with the one before: Luna-H3-AssetLoader overlap (its sound card)."}),
                 "images": ("IMAGE", {"tooltip": "Decoded frames of this clip."}),
                 "audio": ("AUDIO", {"tooltip": "Sound of this clip: the song window or the decoded audio."}),
                 "saved": (SAVED, {"tooltip": "From Luna-H3-ChainRemember. The next clip starts only after the ending is saved."}),
@@ -381,13 +405,14 @@ class LunaH3ChainJoin:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def join(self, chain, images, audio, saved):
+    def join(self, chain, images, audio, saved, overlap=None):
         clip, manager = chain["clip"], chain["manager"]
         if images.shape[0] != chain["frames"]:
             raise ValueError(f"{LOG} Luna-H3-ChainJoin: the clip has {images.shape[0]} frames, the chain makes "
                              f"{chain['frames']} at 24 fps. Frame generation (Interpolation) changes the count: turn it "
                              f"off for a chain.")
-        n = 0 if clip == 0 else int(chain["overlap"])
+        n = _overlap(chain, overlap, "Luna-H3-ChainJoin")
+        n = 0 if clip == 0 else n
         images = images[n:]
 
         # Cut and pad the sound to the picture's length, so small offsets cannot add up down the chain. H3's own sound
@@ -408,7 +433,8 @@ class LunaH3ChainJoin:
         folder = os.path.dirname(saved[-1])
         safetensors.torch.save_file({"waveform": wave, "sample_rate": torch.tensor(sr)},
                                     os.path.join(folder, "sound_%04d.safetensors" % clip))
-        out = {"waveform": wave, "sample_rate": sr}
+        clip_audio = {"waveform": wave, "sample_rate": sr}
+        out = clip_audio
         if manager.has_closed_inputs:
             # VHS ignores the sound until the last clip, then muxes the whole track.
             chunks = []
@@ -423,7 +449,7 @@ class LunaH3ChainJoin:
                 chunks.append(part["waveform"])
             out = {"waveform": torch.cat(chunks, dim=-1), "sample_rate": sr}
         logging.info("%s clip %d joined after %s", LOG, clip + 1, ", ".join(saved))
-        return (images, out)
+        return (images, out, clip_audio)
 
 
 NODE_CLASS_MAPPINGS = {

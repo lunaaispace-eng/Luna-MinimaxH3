@@ -34,7 +34,8 @@ builder also uses the Beta 2.0 workflow nodes (comfyui-vrgamedevgirl); the other
 - **Luna-H3-Chain**: Many clips in one queue on a VHS Meta Batch Manager; clip number, seed and song start per clip.
 - **Luna-H3-ChainContinue**: Puts the end of the clip before at the start of this clip's latent, locked.
 - **Luna-H3-ChainRemember**: Saves the end of this clip, full size and pass 1, for the next clip.
-- **Luna-H3-ChainJoin**: Cuts the copied frames off and gathers the sound into one video.
+- **Luna-H3-ChainJoin**: Cuts the copied frames off and gathers the sound into one video. `clip_audio` is each clip's own
+  sound, for a per-clip VHS Video Combine that keeps every clip on disk, so a stopped run can be continued and joined later.
 
 ## Replaces
 

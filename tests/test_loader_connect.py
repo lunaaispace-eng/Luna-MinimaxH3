@@ -293,5 +293,39 @@ class CanvasRegisteredTests(unittest.TestCase):
         self.assertTrue(schema.inputs[-1].optional)
 
 
+
+class LoaderChainTests(unittest.TestCase):
+    """2026-11-03, Peter: the song start, the segment and the overlap are set on the Asset Loader's card."""
+
+    CARD = {"file": "song.wav", "start": 0.0, "duration": 5.0, "fill": "silence", "position": "shot",
+            "song_start": 87.44, "shot": 2, "overlap": 22}
+
+    def window(self, chain, card=None, song_start=None):
+        seen = {}
+
+        def fake_window(path, start, want, fill, describe):
+            seen["start"], seen["want"] = start, want
+            return SONG, {"name": "song.wav", "start": start, "seconds": want, "total": 300.0, "filled": 0.0,
+                          "taken": want}
+
+        with patch.object(AL, "_media_file", lambda f: "song.wav"), patch.object(AL, "load_audio_window", fake_window):
+            _, info, _ = Loader._song([dict(card or self.CARD)], 124 / 24, None, song_start, chain)
+        return seen, info
+
+    def test_clip_moves_the_cards_shot_on(self):
+        for clip in (0, 1, 2):
+            seen, info = self.window({"clip": clip})
+            self.assertEqual(info["shot"], 2 + clip)
+            self.assertAlmostEqual(seen["start"], 87.44 + (1 + clip) * (124 - 22) / 24)
+            self.assertAlmostEqual(seen["want"], 124 / 24)
+
+    def test_chain_needs_shot_mode_and_no_song_start(self):
+        with self.assertRaisesRegex(RuntimeError, "By shot number"):
+            self.window({"clip": 0}, card=dict(self.CARD, position="free"))
+        with self.assertRaisesRegex(RuntimeError, "By shot number"):
+            self.window({"clip": 0}, song_start=10.0)
+        with self.assertRaisesRegex(RuntimeError, "no song"):
+            Loader._song([], 5.0, None, None, {"clip": 0})
+
 if __name__ == "__main__":
     unittest.main()

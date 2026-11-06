@@ -382,6 +382,9 @@ class LunaAssetLoader:
                     "forceInput": True,
                     "tooltip": "Where in the song this shot starts, in seconds — from Luna-H3-ShotList, for scenes of different lengths. Wired, it wins over the sound card's Start and over 'By shot number'; the window's length still comes from seconds (or the card).",
                 }),
+                "chain": ("LUNA_H3_CHAIN", {
+                    "tooltip": "From Luna-H3-Chain: which clip of the chain this run makes. The sound card must be on 'By shot number'; its Start, Shot and overlap stay yours, and clip k plays segment Shot + k - 1. Wire this loader's overlap output to Luna-H3-ChainContinue, -ChainRemember and -ChainJoin.",
+                }),
             },
         }
 
@@ -419,7 +422,7 @@ class LunaAssetLoader:
         return True
 
     def load(self, image_paths, image_count, asset_state="", media_state="", seconds=None, shot=None,
-             width=None, height=None, song_start=None):
+             width=None, height=None, song_start=None, chain=None):
         paths = _split_paths(image_paths)
         media = _parse_media(media_state)
         cards, clips = media["audio"], media["video"]
@@ -444,7 +447,7 @@ class LunaAssetLoader:
             return {"ui": {"luna_asset_audio": []}, "result": result}
 
         # --- load everything -------------------------------------------------
-        audio, song, song_line = self._song(cards, seconds, shot, song_start)
+        audio, song, song_line = self._song(cards, seconds, shot, song_start, chain)
         settings = media["settings"]
         decoded = self._clips(clips, width, height, settings)
         extra_sounds = self._sounds(cards)
@@ -621,11 +624,21 @@ class LunaAssetLoader:
         return out
 
     @staticmethod
-    def _song(cards, seconds, shot=None, song_start=None):
+    def _song(cards, seconds, shot=None, song_start=None, chain=None):
         """Sound card 1 -> (AUDIO or None, info dict or None, one brief line).
 
         A wired song_start (Luna-H3-ShotList) places the window itself; the card's own
-        start and its shot-number mode then stand aside."""
+        start and its shot-number mode then stand aside. A wired chain (Luna-H3-Chain)
+        moves the card's own shot on by the clip number; the card's Start and overlap stay."""
+        if chain is not None:
+            if not cards:
+                raise RuntimeError("[Luna-H3-AssetLoader] chain is wired but no song is loaded: add the song on "
+                                   "sound card 1 and set its Position to 'By shot number'.")
+            if cards[0]["position"] != "shot" or song_start is not None:
+                raise RuntimeError("[Luna-H3-AssetLoader] chain is wired: set sound card 1's Position to 'By shot "
+                                   "number' and leave song_start unwired, so the card's Start, Shot and overlap "
+                                   "place every clip.")
+            shot = cards[0]["shot"] + int(chain["clip"])
         if not cards:
             return None, None, ""
         c = cards[0]
