@@ -144,5 +144,79 @@ class UpscalerTests(unittest.TestCase):
                 up.learned_latent_lift(torch.zeros(1, 24, 2, 2, 2), (4, 4), NAME)
 
 
+class TemporalPadTests(unittest.TestCase):
+    """The chunk path's halos mirror the clip instead of repeating frame 0 (selflift-Avatar issue #5)."""
+
+    def clip(self, frames):
+        return torch.arange(frames, dtype=torch.float32).view(1, 1, frames, 1, 1).expand(1, 2, frames, 2, 2).clone()
+
+    def test_head_is_mirrored_not_a_hold_of_frame_0(self):
+        padded = up.temporal_pad(self.clip(72), 5)
+        self.assertEqual(padded[0, 0, :7, 0, 0].tolist(), [5, 4, 3, 2, 1, 0, 1])
+        self.assertEqual(padded[0, 0, -6:, 0, 0].tolist(), [71, 70, 69, 68, 67, 66])
+
+    def test_frame_0_appears_once_in_the_head(self):
+        head = up.temporal_pad(self.clip(72), 5)[0, 0, :10, 0, 0]
+        self.assertEqual(int((head == 0).sum()), 1)
+
+    def test_clip_shorter_than_the_overlap_falls_back_to_replicate(self):
+        padded = up.temporal_pad(self.clip(4), 5)
+        self.assertEqual(padded.shape[2], 14)
+        self.assertEqual(padded[0, 0, :5, 0, 0].tolist(), [0, 0, 0, 0, 0])
+
+    def test_no_overlap_is_unchanged(self):
+        x = self.clip(10)
+        self.assertTrue(torch.equal(up.temporal_pad(x, 0), x))
+
+    def test_chunk_path_uses_the_mirror(self):
+        calls = []
+        real = up.temporal_pad
+
+        def spy(x, overlap):
+            calls.append((x.shape[2], overlap))
+            return real(x, overlap)
+
+        with patch.object(up, "temporal_pad", spy):
+            model = small_model(in_blocks=1, out_blocks=1)
+            with torch.no_grad():
+                model(torch.randn(1, 24, 40, 2, 2), scale=2)
+        self.assertTrue(calls and calls[0][0] == 40)
+
+
+class TemporalWindowTests(unittest.TestCase):
+    """Each chunk reads `overlap` frames of context on both sides of the frames it writes."""
+
+    def test_every_window_has_context_on_both_sides(self):
+        T, chunk, overlap = 72, 32, 5
+        windows = list(up.temporal_windows(T, chunk, overlap))
+        self.assertEqual([w[:2] for w in windows], [(0, 32), (32, 64), (64, 72)])
+        for seg_start, seg_end, out_start, out_end, lo, hi in windows:
+            # padded index p is clip frame p - overlap
+            self.assertEqual(out_start - (lo - overlap), overlap)
+            self.assertEqual((hi - overlap) - out_end, overlap)
+        self.assertEqual(windows[-1][5], T + 2 * overlap)  # the tail reads its mirrored halo
+
+    def test_written_frames_cover_the_clip(self):
+        covered = set()
+        for _, _, out_start, out_end, _, _ in up.temporal_windows(72, 32, 5):
+            covered.update(range(out_start, out_end))
+        self.assertEqual(covered, set(range(72)))
+
+    def test_chunked_equals_one_pass_for_a_local_operator(self):
+        """With an operator that sees one frame either side, chunking must give the same frames as one pass."""
+        def local_seg(x, scale, size):
+            kernel = torch.full((x.shape[1], 1, 3, 1, 1), 1.0 / 3, dtype=x.dtype)
+            x = F.conv3d(x, kernel, padding=(1, 0, 0), groups=x.shape[1])
+            return F.interpolate(x, size=size, mode="nearest")
+
+        model = small_model(in_blocks=1, out_blocks=1)
+        overlap = model.in_blocks[1].dwconv.weight.shape[2]
+        x = torch.randn(1, 24, 72, 2, 2)
+        with patch.object(model, "_forward_seg", side_effect=local_seg), torch.no_grad():
+            chunked = model(x, scale=2, target_size=(72, 4, 4))
+            whole = local_seg(up.temporal_pad(x, overlap), 1.0, (72 + 2 * overlap, 4, 4))[:, :, overlap:-overlap]
+        torch.testing.assert_close(chunked, whole)
+
+
 if __name__ == "__main__":
     unittest.main()

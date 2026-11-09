@@ -62,7 +62,8 @@ def _pixel_route_vae(
 
     Decodes the low-resolution VAE-space latent, resizes each decoded frame
     spatially to the target pixel grid using 2D bilinear interpolation
-    (align_corners=False), and re-encodes at the target resolution.
+    (align_corners=False), in chunks of frames (`_resize_frames`), and
+    re-encodes at the target resolution.
     """
     b, c, t, h_low, w_low = z0_low_vae.shape
     h_out, w_out = out_hw
@@ -72,22 +73,14 @@ def _pixel_route_vae(
         got = tuple(pixels_low.shape) if isinstance(pixels_low, torch.Tensor) else type(pixels_low).__name__
         raise ValueError(f"lift_video: vae.decode must return a 4D or 5D pixel tensor, got {got}")
 
-    if pixels_low.ndim == 5:
-        b_px, f_px, h_px, w_px, c_px = pixels_low.shape
-        h_high_px = (h_px // h_low) * h_out if h_px % h_low == 0 else round(h_px * h_out / h_low)
-        w_high_px = (w_px // w_low) * w_out if w_px % w_low == 0 else round(w_px * w_out / w_low)
-        frames_2d = pixels_low.reshape(b_px * f_px, h_px, w_px, c_px).movedim(-1, 1).float()
-        resized_2d = F.interpolate(frames_2d, size=(h_high_px, w_high_px), mode="bilinear", align_corners=False)
-        pixels_high = resized_2d.movedim(1, -1).reshape(b_px, f_px, h_high_px, w_high_px, c_px).to(
-            dtype=pixels_low.dtype
-        )
-    else:
-        f_px, h_px, w_px, c_px = pixels_low.shape
-        h_high_px = (h_px // h_low) * h_out if h_px % h_low == 0 else round(h_px * h_out / h_low)
-        w_high_px = (w_px // w_low) * w_out if w_px % w_low == 0 else round(w_px * w_out / w_low)
-        frames_2d = pixels_low.movedim(-1, 1).float()
-        resized_2d = F.interpolate(frames_2d, size=(h_high_px, w_high_px), mode="bilinear", align_corners=False)
-        pixels_high = resized_2d.movedim(1, -1).to(dtype=pixels_low.dtype)
+    lead = pixels_low.shape[:-3]  # (B, F) for 5D, (F,) for 4D
+    h_px, w_px, c_px = pixels_low.shape[-3:]
+    h_high_px = (h_px // h_low) * h_out if h_px % h_low == 0 else round(h_px * h_out / h_low)
+    w_high_px = (w_px // w_low) * w_out if w_px % w_low == 0 else round(w_px * w_out / w_low)
+    frames = pixels_low.reshape(-1, h_px, w_px, c_px)
+    del pixels_low
+    pixels_high = _resize_frames(frames, (h_high_px, w_high_px), vae).reshape(*lead, h_high_px, w_high_px, c_px)
+    del frames
 
     z_pix_vae = vae.encode(pixels_high)
     if not isinstance(z_pix_vae, torch.Tensor) or tuple(z_pix_vae.shape) != (b, c, t, h_out, w_out):
@@ -96,6 +89,31 @@ def _pixel_route_vae(
             f"lift_video: vae.encode must return Tensor of shape {(b, c, t, h_out, w_out)}, got {got}"
         )
     return z_pix_vae
+
+
+_RESIZE_CHUNK = 32  # frames per resize call
+
+
+def _resize_frames(frames: torch.Tensor, size: tuple[int, int], vae) -> torch.Tensor:
+    """Bilinear-resize [N, h, w, C] pixel frames to [N, H, W, C], a chunk of frames at a time.
+
+    One whole-video float32 resize held several full-size copies of every frame in RAM at once (tens of GB on a long
+    2 MP clip, on a PC whose RAM is the tight limit). Here each chunk is resized in float32 on the VAE's device and
+    written into one preallocated output: float16 when that device is a GPU (pixels lie in [0, 1], where float16 is
+    finer than an 8-bit frame), the input's dtype otherwise. The result per frame is the same bilinear resize.
+    """
+    device = getattr(vae, "device", None)
+    if not isinstance(device, torch.device):
+        device = frames.device
+    out_dtype = torch.float16 if device.type != "cpu" else frames.dtype
+    n, _, _, c = frames.shape
+    out = torch.empty((n, size[0], size[1], c), dtype=out_dtype, device=frames.device)
+    for start in range(0, n, _RESIZE_CHUNK):
+        chunk = frames[start:start + _RESIZE_CHUNK].to(device=device, dtype=torch.float32).movedim(-1, 1)
+        chunk = F.interpolate(chunk, size=size, mode="bilinear", align_corners=False)
+        out[start:start + _RESIZE_CHUNK] = chunk.movedim(1, -1).to(device=out.device, dtype=out_dtype)
+        del chunk
+    return out
 
 
 def _prepare_active_mask(

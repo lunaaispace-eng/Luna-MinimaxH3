@@ -101,6 +101,20 @@ def _resize_video(x, size, mode):
     return torch.nn.functional.interpolate(x.float(), size=size, mode=mode).to(x.dtype)
 
 
+def _shrink_keyframe(lat, h, w):
+    """Resize a keyframe latent to (h, w) in space only, keeping each frame's per-channel mean.
+
+    Bilinear shrinking shifts a latent's channel means a little, and a mean shift in an H3 latent is a colour cast.
+    The low grid cannot hold the fine detail anyway, so only the means are put back, frame by frame.
+    """
+    size = (lat.shape[2], h, w) if lat.ndim == 5 else (h, w)
+    mode = "trilinear" if lat.ndim == 5 else "bilinear"  # T is kept, so trilinear is bilinear on each frame
+    src = lat.float()
+    small = torch.nn.functional.interpolate(src, size=size, mode=mode, align_corners=False)
+    small = small + (src.mean(dim=(-2, -1), keepdim=True) - small.mean(dim=(-2, -1), keepdim=True))
+    return small.to(lat.dtype)
+
+
 def _keyframes_at(conditioning, h, w):
     """Keyframe latents share the generation grid on H3; pass 1 needs them at the low grid."""
     out = []
@@ -112,8 +126,8 @@ def _keyframes_at(conditioning, h, w):
             for kf in keyframes:
                 kf = dict(kf)
                 lat = kf.get("latent")
-                if lat is not None and lat.ndim == 5 and tuple(lat.shape[-2:]) != (h, w):
-                    kf["latent"] = _resize_video(lat, (lat.shape[2], h, w), "trilinear")
+                if lat is not None and lat.ndim in (4, 5) and tuple(lat.shape[-2:]) != (h, w):
+                    kf["latent"] = _shrink_keyframe(lat, h, w)
                 resized.append(kf)
             extra["minimax_keyframes"] = resized
         out.append([cond, extra])

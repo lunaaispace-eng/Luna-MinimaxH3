@@ -320,5 +320,31 @@ class LiftVideoTests(unittest.TestCase):
                     )
 
 
+class ResizeFramesTests(unittest.TestCase):
+    """The pixel route resizes a chunk of frames at a time; each frame gets the same bilinear resize as one pass."""
+
+    def test_chunked_equals_whole_video_resize(self):
+        from luna_lift import _resize_frames, _RESIZE_CHUNK
+
+        frames = torch.rand(2 * _RESIZE_CHUNK + 5, 6, 10, 3)
+        out = _resize_frames(frames, (12, 20), object())
+        whole = F.interpolate(frames.movedim(-1, 1), size=(12, 20), mode="bilinear",
+                              align_corners=False).movedim(1, -1)
+        self.assertEqual(out.shape, (2 * _RESIZE_CHUNK + 5, 12, 20, 3))
+        self.assertEqual(out.dtype, frames.dtype)
+        torch.testing.assert_close(out, whole)
+
+    def test_cpu_vae_device_keeps_input_dtype(self):
+        from luna_lift import _resize_frames
+
+        class _CpuVae:
+            device = torch.device("cpu")
+
+        frames = torch.rand(3, 4, 4, 3, dtype=torch.float64)
+        out = _resize_frames(frames, (8, 8), _CpuVae())
+        self.assertEqual(out.dtype, torch.float64)
+        self.assertEqual(out.device, frames.device)
+
+
 if __name__ == "__main__":
     unittest.main()

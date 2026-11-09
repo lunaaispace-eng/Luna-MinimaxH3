@@ -250,5 +250,28 @@ class TwoPassTests(unittest.TestCase):
             self.run_two_pass(source, low_res_head=head)
 
 
+class ShrinkKeyframeTests(unittest.TestCase):
+    """Pass 1 keyframes: spatial-only shrink that keeps every frame's per-channel mean (no colour cast)."""
+
+    def test_keeps_frames_and_per_frame_channel_means(self):
+        torch.manual_seed(3)
+        lat = torch.rand(1, 24, 3, 9, 13) ** 3  # skewed values, so a plain bilinear shrink moves the means
+        plain = torch.nn.functional.interpolate(lat, size=(3, 4, 6), mode="trilinear", align_corners=False)
+        drift = (plain.mean(dim=(-2, -1)) - lat.mean(dim=(-2, -1))).abs().max()
+        self.assertGreater(float(drift), 1e-4)
+        small = luna_two_pass._shrink_keyframe(lat, 4, 6)
+        self.assertEqual(small.shape, (1, 24, 3, 4, 6))
+        torch.testing.assert_close(small.mean(dim=(-2, -1)), lat.mean(dim=(-2, -1)))
+        for f in range(3):  # each frame is its own image: no blending across time
+            one = luna_two_pass._shrink_keyframe(lat[:, :, f:f + 1], 4, 6)
+            torch.testing.assert_close(small[:, :, f:f + 1], one)
+
+    def test_image_keyframe_and_dtype(self):
+        lat = torch.rand(1, 24, 8, 8, dtype=torch.float16)
+        small = luna_two_pass._shrink_keyframe(lat, 4, 4)
+        self.assertEqual(small.shape, (1, 24, 4, 4))
+        self.assertEqual(small.dtype, torch.float16)
+
+
 if __name__ == "__main__":
     unittest.main()

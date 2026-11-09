@@ -73,6 +73,37 @@ def zero_module(module):
         p.detach().zero_()
     return module
 
+
+def temporal_pad(x, overlap):
+    """Mirror-pad the temporal halos of the chunked path (dim 2 of [B, C, T, H, W]).
+
+    Replicate padding repeated H3's causal first latent frame into a six-frame hold (five halo copies plus frame 0),
+    and the 3D upscaler turned that still context into invented detail at the clip's start: a grid of glyph-like
+    marks on some seeds. Peter's own fix: opened with the fix in slmonker/selflift-Avatar issue #5, merged there as f1fdfa9 (2026-10-25); the LBH-123-AI
+    original this file comes from still pads with replicate, so keep this when updating from it;
+    reimplemented here. Reflect needs the overlap to be shorter than the clip, so replicate stays as the fallback.
+    """
+    if overlap <= 0:
+        return x
+    mode = "reflect" if overlap < x.shape[2] else "replicate"
+    return F.pad(x, (0, 0, 0, 0, overlap, overlap), mode=mode)
+
+
+def temporal_windows(length, chunk, overlap):
+    """Yield (seg_start, seg_end, out_start, out_end, lo, hi) for the chunked path.
+
+    [seg_start, seg_end) is the chunk, [out_start, out_end) the frames it writes (the chunk plus `overlap` on each side,
+    cross-faded with the neighbours), and [lo, hi) the slice of the padded clip it reads: the written frames plus `overlap`
+    of context on BOTH sides. The LBH-123-AI original read [out_start - 2*overlap, out_end) instead, so the last written
+    frames of every window sat on the slice's edge with no future context, and the clip's tail never used its mirrored
+    halo. Indices lo and hi are in the padded clip (`temporal_pad`, `overlap` frames longer at each end).
+    """
+    for seg_start in range(0, length, chunk):
+        seg_end = min(length, seg_start + chunk)
+        out_start = max(0, seg_start - overlap)
+        out_end = min(length, seg_end + overlap)
+        yield seg_start, seg_end, out_start, out_end, out_start, out_end + 2 * overlap
+
 class AttnBlock3D(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -202,20 +233,12 @@ class LatentResizer3D(nn.Module):
 
         print(f"[MinimaxH3-3D] temporal chunking: T={T} chunks={(T + chunk - 1) // chunk} overlap={overlap}")
 
-        x_padded = F.pad(x, (0, 0, 0, 0, overlap, overlap), mode='replicate')
+        x_padded = temporal_pad(x, overlap)
 
         out_full = torch.zeros(B, C, T, size[-2], size[-1], device=x.device, dtype=x.dtype)
         weight_full = torch.zeros(1, 1, T, 1, 1, device=x.device, dtype=x.dtype)
 
-        start = 0
-        while start < T:
-            seg_start = start
-            seg_end = min(T, start + chunk)
-            out_start = max(0, seg_start - overlap)
-            out_end = min(T, seg_end + overlap)
-            lo = max(0, out_start - overlap)
-            hi = min(T + 2 * overlap, out_end + overlap)
-
+        for index, (seg_start, seg_end, out_start, out_end, lo, hi) in enumerate(temporal_windows(T, chunk, overlap)):
             seg = x_padded[:, :, lo:hi].contiguous()
             seg_size = (hi - lo, size[-2], size[-1])
             seg_out = self._forward_seg(seg, scale, seg_size)
@@ -236,9 +259,8 @@ class LatentResizer3D(nn.Module):
             out_full[:, :, out_start:out_end] += valid_out * weight.view(1, 1, n_valid, 1, 1)
             weight_full[:, :, out_start:out_end] += weight.view(1, 1, n_valid, 1, 1)
 
-            start += chunk
             del seg, seg_out, valid_out
-            if start % (chunk * 4) == 0:
+            if (index + 1) % 4 == 0:
                 gc.collect()
 
         out_full = out_full / weight_full.clamp(min=1e-8)
