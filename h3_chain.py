@@ -1,9 +1,9 @@
 """Luna-H3-Chain, -ChainContinue, -ChainRemember, -ChainJoin — many H3 clips in one queue, each continuing the one before.
 
-One VHS Meta Batch Manager runs the graph once per clip. Clip 1 is a normal generation. Every later clip copies the
-last `overlap` frames of the clip before into its own start and locks them (noise mask 0), so the picture carries on
-where that clip ended. Join cuts the copied frames off again and gathers the sound, and the batch manager's VHS Video
-Combine writes one video on the last clip.
+One Luna-MetaBatch (Luna-Media-Tools; VHS's Meta Batch Manager works the same) runs the graph once per clip. Clip 1 is a
+normal generation. Every later clip copies the last `overlap` frames of the clip before into its own start and locks them
+(noise mask 0), so the picture carries on where that clip ended. Join cuts the copied frames off again and gathers the
+sound, and Luna-SaveVideo on the same meta_batch writes one video, closed on the last clip with the whole soundtrack.
 
 The song settings live on Luna-H3-AssetLoader's sound card (2026-11-03, Peter: "it needs to be the other way around, set it
 in asset loader"): Luna-H3-Chain -> the loader's `chain` input gives only the clip number; the card's Start, Shot and
@@ -124,9 +124,9 @@ def _advance(manager, clips, prompt, unique_id):
     if not 0 <= step < clips:
         raise ValueError(f"{LOG} the run went past {clips} clips; queue a fresh run.")
     if getattr(manager, "inputs", None):
-        raise ValueError(f"{LOG} the VHS Meta Batch Manager drives the clips here; disconnect other batch loaders from it.")
+        raise ValueError(f"{LOG} the batch manager drives the clips here; disconnect other batch loaders from it.")
     if step == 0:
-        # VHS resets its id after finishing, and its cached output can outlive the run.
+        # The manager resets its id after finishing, and its cached output can outlive the run.
         manager.reset()
         manager.unique_id = uid
     elif manager.unique_id != uid:
@@ -138,7 +138,7 @@ def _advance(manager, clips, prompt, unique_id):
 
 class LunaH3Chain:
     DESCRIPTION = (
-        "Makes one video from several H3 clips in one queue. Connect a VHS Meta Batch Manager (its frames_per_batch is "
+        "Makes one video from several H3 clips in one queue. Connect a Luna-MetaBatch (its frames_per_batch is "
         "every clip's length, on the 17k+5 grid), set how many clips, and queue once. Every clip after the first "
         "starts with the last frames of the clip before, locked, so the picture carries on.\n\n"
         "The song start, the first segment and the overlap are set on Luna-H3-AssetLoader's sound card (Position: By "
@@ -165,8 +165,9 @@ class LunaH3Chain:
         return {
             "required": {
                 "meta_batch": ("VHS_BatchManager", {"forceInput": True,
-                    "tooltip": "VHS Meta Batch Manager. It reruns the graph once per clip; its frames_per_batch is every "
-                               "clip's length. Connect its VHS Video Combine to Luna-H3-ChainJoin's outputs."}),
+                    "tooltip": "Luna-MetaBatch.meta_batch (or VHS's Meta Batch Manager). It reruns the graph once per "
+                               "clip; its frames_per_batch is every clip's length. Wire the same meta_batch into the "
+                               "Luna-SaveVideo that takes Luna-H3-ChainJoin's outputs."}),
                 "clips": ("INT", {"default": 3, "min": 1, "max": 1000,
                     "tooltip": "How many clips this run makes."}),
                 "seed": ("INT", {"default": 12345, "min": 0, "max": 0xffffffffffffffff,
@@ -371,10 +372,10 @@ class LunaH3ChainRemember:
 class LunaH3ChainJoin:
     DESCRIPTION = (
         "Cuts the copied frames off every clip after the first and keeps each clip's sound for the end, so the batch "
-        "manager's VHS Video Combine gets one continuous video and one soundtrack.\n\nWire the decoded frames into "
+        "manager's Luna-SaveVideo gets one continuous video and one soundtrack.\n\nWire the decoded frames into "
         "images, the clip's sound (the song window from Luna-H3-AssetLoader audio, or the decoded audio) into audio, "
-        "Luna-H3-ChainRemember saved into saved; images and audio -> VHS Video Combine (meta_batch). To keep every "
-        "clip on disk, so a stopped run loses nothing: images and clip_audio -> a second VHS Video Combine without "
+        "Luna-H3-ChainRemember saved into saved; images and audio -> Luna-SaveVideo with meta_batch. To keep every "
+        "clip on disk, so a stopped run loses nothing: images and clip_audio -> a second Luna-SaveVideo without "
         "meta_batch."
     )
     CATEGORY = "Luna-MinimaxH3"
@@ -383,9 +384,9 @@ class LunaH3ChainJoin:
     RETURN_TYPES = ("IMAGE", "AUDIO", "AUDIO")
     RETURN_NAMES = ("images", "audio", "clip_audio")
     OUTPUT_TOOLTIPS = (
-        "This clip without the copied frames. Connect to VHS Video Combine images.",
-        "The whole soundtrack on the last clip. Connect to the same VHS Video Combine audio.",
-        "This clip's own sound, cut to images, on every clip. Connect to a per-clip VHS Video Combine (no meta_batch).",
+        "This clip without the copied frames. Connect to Luna-SaveVideo images (the one with meta_batch).",
+        "The whole soundtrack on the last clip. Connect to the same Luna-SaveVideo audio.",
+        "This clip's own sound, cut to images, on every clip. Connect to a per-clip Luna-SaveVideo (no meta_batch).",
     )
 
     @classmethod
@@ -436,7 +437,7 @@ class LunaH3ChainJoin:
         clip_audio = {"waveform": wave, "sample_rate": sr}
         out = clip_audio
         if manager.has_closed_inputs:
-            # VHS ignores the sound until the last clip, then muxes the whole track.
+            # The meta-batch save ignores the sound until the last clip, then muxes the whole track.
             chunks = []
             for k in range(chain["first_clip"], clip + 1):
                 part_path = os.path.join(folder, "sound_%04d.safetensors" % k)

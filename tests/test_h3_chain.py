@@ -1,7 +1,8 @@
 """Unit tests for the chain nodes (h3_chain.py), on CPU tensors.
 
 Stubs `comfy.nested_tensor` and `comfy.utils` when ComfyUI is not on the path, like test_h3_latent.py.
-The output folder is a temporary directory; the VHS Meta Batch Manager is a small fake.
+The output folder is a temporary directory; the batch manager is a small fake, and the last class runs the chain on
+the real Luna-MetaBatch from Luna-Media-Tools (skipped when that pack is not beside this one).
 """
 
 from __future__ import annotations
@@ -285,6 +286,55 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(out_audio["waveform"].shape[-1], round(sum(pieces) / 24 * sr) + 0 * len(pieces))
         first_of_clip_2 = out_audio["waveform"][0, 0, round(FRAMES / 24 * sr)]
         self.assertEqual(float(first_of_clip_2), 1e6 + round(22 / 24 * sr))
+
+
+
+_META_BATCH = Path(__file__).resolve().parents[2] / "Luna-Media-Tools" / "meta_batch.py"
+
+
+@unittest.skipUnless(_META_BATCH.is_file(), "Luna-Media-Tools is not beside this pack")
+class RealLunaMetaBatchTests(unittest.TestCase):
+    """The chain on the real Luna-MetaBatch: same socket type, same requeue count, so the chain needs no VHS."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("luna_meta_batch_under_test", _META_BATCH)
+        cls.meta = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.meta)
+
+    def prompt(self, step):
+        return {"10": {"class_type": "Luna-H3-Chain", "inputs": {"meta_batch": ["5", 0]}},
+                "5": {"class_type": "Luna-MetaBatch", "inputs": {"frames_per_batch": FRAMES, "requeue": step}}}
+
+    def test_three_clips_on_luna_metabatch(self):
+        manager = self.meta.LunaMetaBatch()
+        for step in range(3):
+            prompt = self.prompt(step)
+            (handed,) = manager.update_batch(FRAMES, prompt=prompt, unique_id="5")
+            out = h3_chain.LunaH3Chain().run(handed, 3, 100, True, prompt=prompt, unique_id="10",
+                                             first_prompt="a", later_prompt="b")
+            self.assertEqual(out[0]["clip"], step)
+            self.assertEqual(out[2], step + 1)
+            self.assertEqual(manager.has_closed_inputs, step == 2)
+            self.assertEqual(manager.total_frames, 3 * FRAMES)
+
+    def test_fresh_queue_closes_a_file_left_open_by_a_stopped_chain(self):
+        manager = self.meta.LunaMetaBatch()
+        manager.update_batch(FRAMES, prompt=self.prompt(0), unique_id="5")
+        closed = []
+
+        def left_open():
+            yield
+            closed.append(True)
+
+        handle = left_open()
+        next(handle)
+        manager.outputs["20"] = ({}, handle)
+        manager.update_batch(FRAMES, prompt=self.prompt(0), unique_id="5")
+        self.assertEqual(closed, [True])
+        self.assertEqual(manager.outputs, {})
 
 
 if __name__ == "__main__":
