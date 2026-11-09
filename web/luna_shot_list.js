@@ -12,6 +12,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { LUNA } from "./luna_theme.mjs";
+import { keepNodeWidth } from "./luna_widget_width.mjs";
 
 const NODE = "Luna-H3-ShotList";
 const KEYS = ["script", "grid", "overlap", "scene"];
@@ -197,6 +198,7 @@ function buildTable(node) {
     });
     widget.serialize = false;
     widget.computeSize = (width) => [width, tableHeight(node)];
+    keepNodeWidth(widget);   // the side panel must not shrink the table (luna_widget_width.mjs)
 }
 
 // The value a wired output carries for the scene picked now, or null when not known

@@ -19,6 +19,7 @@
 
 import { app } from "../../scripts/app.js";
 import { LUNA } from "./luna_theme.mjs";
+import { keepNodeWidth } from "./luna_widget_width.mjs";
 
 const NODE = "Luna-H3-AssetLoader";
 const MAX = 9;
@@ -2582,6 +2583,7 @@ app.registerExtension({
                 getHeight: cardsHeight,
             });
             w.computeSize = (width) => [width, cardsHeight()];
+            keepNodeWidth(w);   // the side panel must not shrink the cards (luna_widget_width.mjs)
             this._lunaRender = () => { ui.render(); this.setDirtyCanvas(true, true); };
             this._lunaRoot = ui.root;
 
