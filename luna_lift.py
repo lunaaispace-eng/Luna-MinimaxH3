@@ -73,16 +73,24 @@ def _pixel_route_vae(
         got = tuple(pixels_low.shape) if isinstance(pixels_low, torch.Tensor) else type(pixels_low).__name__
         raise ValueError(f"lift_video: vae.decode must return a 4D or 5D pixel tensor, got {got}")
 
-    lead = pixels_low.shape[:-3]  # (B, F) for 5D, (F,) for 4D
     h_px, w_px, c_px = pixels_low.shape[-3:]
     h_high_px = (h_px // h_low) * h_out if h_px % h_low == 0 else round(h_px * h_out / h_low)
     w_high_px = (w_px // w_low) * w_out if w_px % w_low == 0 else round(w_px * w_out / w_low)
     frames = pixels_low.reshape(-1, h_px, w_px, c_px)
     del pixels_low
-    pixels_high = _resize_frames(frames, (h_high_px, w_high_px), vae).reshape(*lead, h_high_px, w_high_px, c_px)
+    if frames.shape[0] % b:
+        raise ValueError(f"lift_video: {frames.shape[0]} decoded frames do not split into batch {b}")
+    per_video = frames.shape[0] // b
+    # Each video goes to vae.encode as ComfyUI's frames-as-batch [F, H, W, C]. A 5D [B, F, H, W, C] input is cropped by
+    # VAE.vae_encode_crop_pixels on every axis between batch and channels, the frame axis included, as if it were
+    # spatial: 294 frames became 288, and 87 latents came back as 82 (2026-11-10, the first live rho run).
+    encoded = []
+    for i in range(b):
+        video = _resize_frames(frames[i * per_video:(i + 1) * per_video], (h_high_px, w_high_px), vae)
+        encoded.append(vae.encode(video))
+        del video
     del frames
-
-    z_pix_vae = vae.encode(pixels_high)
+    z_pix_vae = encoded[0] if b == 1 else torch.cat(encoded, dim=0)
     if not isinstance(z_pix_vae, torch.Tensor) or tuple(z_pix_vae.shape) != (b, c, t, h_out, w_out):
         got = tuple(z_pix_vae.shape) if isinstance(z_pix_vae, torch.Tensor) else type(z_pix_vae).__name__
         raise ValueError(

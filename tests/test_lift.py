@@ -41,6 +41,11 @@ class _TinyFakeVAE:
 
     def encode(self, pixels: torch.Tensor) -> torch.Tensor:
         self.encode_calls += 1
+        # As ComfyUI's VAE.encode: one video as frames-as-batch [F, H, W, C]. A 5D input is refused here, because the
+        # real one crops its frame axis as if it were spatial (luna_lift._pixel_route_vae).
+        if pixels.ndim != 4:
+            raise AssertionError(f"vae.encode takes one video as [F, H, W, C], got {tuple(pixels.shape)}")
+        pixels = pixels.unsqueeze(0)
         b, frames, h_px, w_px, _ = pixels.shape
         t = 1 if frames <= 1 else 1 + (frames - 1) // self.temporal_ratio
         h = h_px // self.spatial_ratio
@@ -174,7 +179,7 @@ class LiftVideoTests(unittest.TestCase):
         frames_2d = px_low.reshape(b_px * f_px, h_px, w_px, c_px).movedim(-1, 1)
         resized_2d = F.interpolate(frames_2d, size=(8 * 16, 12 * 16), mode="bilinear", align_corners=False)
         px_high = resized_2d.movedim(1, -1).reshape(b_px, f_px, 8 * 16, 12 * 16, c_px)
-        expected_pix = vae.encode(px_high)
+        expected_pix = vae.encode(px_high[0])  # one video, frames as batch
         self.assertTrue(torch.allclose(out_pix, expected_pix, atol=1e-6))
         self.assertFalse(torch.allclose(out_pix, F.interpolate(self.z0_low, size=(2, 8, 12), mode="nearest")))
 
@@ -224,7 +229,7 @@ class LiftVideoTests(unittest.TestCase):
             .movedim(1, -1)
             .reshape(b_px, f_px, 8 * 16, 12 * 16, c_px)
         )
-        z_pix = fmt.process_in(vae.encode(px_high))
+        z_pix = fmt.process_in(vae.encode(px_high[0]))  # one video, frames as batch
         delta = z_pix - z_lat
         s = delta.abs().mean(dim=1, keepdim=True)
         q = torch.quantile(s.reshape(-1), 1.0 - rho)
@@ -251,6 +256,9 @@ class LiftVideoTests(unittest.TestCase):
 
             def encode(self, pixels: torch.Tensor) -> torch.Tensor:
                 self.encode_calls += 1
+                if pixels.ndim != 4:
+                    raise AssertionError(f"vae.encode takes one video as [F, H, W, C], got {tuple(pixels.shape)}")
+                pixels = pixels.unsqueeze(0)
                 b, frames, h_px, w_px, _ = pixels.shape
                 h = h_px // self.spatial_ratio
                 w = w_px // self.spatial_ratio
@@ -318,6 +326,22 @@ class LiftVideoTests(unittest.TestCase):
                         w_max=w_max,
                         latent_format=self.latent_format,
                     )
+
+
+class PixelRouteEncodeTests(unittest.TestCase):
+    """Each video reaches vae.encode alone, as [F, H, W, C]; a batch is encoded video by video."""
+
+    def test_batch_of_two_is_encoded_video_by_video(self):
+        torch.manual_seed(5)
+        vae = _TinyFakeVAE()
+        z0_low = torch.randn(2, 24, 3, 4, 6)
+        out = lift_video(z0_low, vae, (8, 12), rho=0.5, w_min=0.2, w_max=1.0,
+                         latent_format=comfy.latent_formats.MiniMaxH3Video())
+        self.assertEqual(out.shape, (2, 24, 3, 8, 12))
+        self.assertEqual(vae.encode_calls, 2)
+        one = lift_video(z0_low[1:], _TinyFakeVAE(), (8, 12), rho=0.5, w_min=0.2, w_max=1.0,
+                         latent_format=comfy.latent_formats.MiniMaxH3Video())
+        torch.testing.assert_close(out[1:], one)
 
 
 class ResizeFramesTests(unittest.TestCase):
