@@ -42,7 +42,7 @@ test("readout file registers no second help, collapse or tint", () => {
 function samplerFunctions() {
     const src = readFileSync(join(root, "web", "luna_sampler.js"), "utf8")
         .replace(/^import .*$/gm, "");
-    const make = new Function("app", "LUNA", `${src}\nreturn { migrateSingleScheduler, recipeNotes, scheduleLine };`);
+    const make = new Function("app", "LUNA", `${src}\nreturn { migrateSingleScheduler, recipeNotes, scheduleLine, recipeFor, recipeToFlat, nodeRecipe, matchesRecipe, GEAR_INSET, num };`);
     return make({ registerExtension() {} }, {});
 }
 
@@ -120,4 +120,57 @@ test("the drawn readout names the hand-over sigma, and 0 keeps the step split", 
         "pass 1: steps 1-9 (low) / pass 2: steps 10-12 (high), hand-over at sigma 0.6");
     assert.equal(scheduleLine(node({ ...base, handover_sigma: 0 })),
         "pass 1: steps 1-9 (low) / pass 2: steps 10-12 (high), denoise 0.5");
+});
+
+// The recipe menu (plans/recipe-menu.md).
+const NATURAL = {
+    name: "Natural skin · 2 MP",
+    low: { lora: "minimax_h3_DMAD_8step_full_lora_avg_rank_58_bf16.safetensors", strength: 1, sampler: "lcm", scheduler: "simple", shift: 12, audio_shift: 2, cfg: 1 },
+    high: { lora: "minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors", strength: 1, sampler: "er_sde", scheduler: "simple", shift: 12, audio_shift: 2, cfg: 1 },
+    total_steps: 6, transition: 4, handover_sigma: 0.923077, lowres_scale: 0.7,
+};
+
+test("a LoRA in any folder finds its recipe by file name", () => {
+    const { recipeFor } = samplerFunctions();
+    const recipes = { "MiniMaxH3/d8.safetensors": { total_steps: 6 } };
+    assert.equal(recipeFor("MiniMaxH3/d8.safetensors", recipes).total_steps, 6);
+    assert.equal(recipeFor("other\\d8.safetensors", recipes).total_steps, 6);
+    assert.equal(recipeFor("d8.safetensors", recipes).total_steps, 6);
+    assert.equal(recipeFor("d9.safetensors", recipes), null);
+    assert.equal(recipeFor("none", recipes), null);
+});
+
+test("Apply writes the found LoRA paths and every value; the node then matches the recipe", () => {
+    const { recipeToFlat, nodeRecipe, matchesRecipe } = samplerFunctions();
+    const where = { low: "MiniMaxH3/" + NATURAL.low.lora, high: "x/" + NATURAL.high.lora };
+    const flat = recipeToFlat(NATURAL, where);
+    assert.equal(flat.lora_low, where.low);
+    assert.equal(flat.lora_high, where.high);
+    assert.equal(flat.sampler_low, "lcm");
+    assert.equal(flat.sampler_high, "er_sde");
+    assert.equal(flat.handover_sigma, 0.923077);
+    assert.equal(flat.audio_shift_high, 2);
+    const names = Object.keys(flat).filter((name) => !name.startsWith("sampler_"));
+    const node = fakeNode(names);
+    for (const name of names) node.widgets.find((widget) => widget.name === name).value = flat[name];
+    assert.equal(nodeRecipe(node).low.lora, NATURAL.low.lora);
+    assert.equal(matchesRecipe(node, NATURAL), true);
+    node.widgets.find((widget) => widget.name === "lowres_scale").value = 0.75;
+    assert.equal(matchesRecipe(node, NATURAL), false);
+});
+
+test("the ⚙ sits one slot left of the chevron", () => {
+    const { GEAR_INSET } = samplerFunctions();
+    assert.equal(GEAR_INSET, 56);
+    const src = code("luna_sampler.js");
+    for (const route of ["/luna_sampler/pair_recipes", "/luna_sampler/recommend", "/luna_sampler/validate", "/luna_sampler/user_recipes"]) {
+        assert.ok(src.includes(`"${route}"`), route);
+    }
+});
+
+test("an empty or mistyped panel field is null, not 0", () => {
+    const { num } = samplerFunctions();
+    for (const bad of ["", "  ", null, undefined, "abc"]) assert.equal(num(bad), null, String(bad));
+    assert.equal(num("0"), 0);
+    assert.equal(num("0.923077"), 0.923077);
 });

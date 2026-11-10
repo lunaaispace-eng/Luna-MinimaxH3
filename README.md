@@ -111,7 +111,21 @@ pass 2 refines detail.
 at 1.0, pass 2 `pika_h3_flex_fl2va_v1` at 1.0, `lcm` and `linear_quadratic` in both, `total_steps` 8, `transition` 5, `lowres_scale`
 0.5, Sol-Attn tau 1.0. For generated sound, `lowres_scale` 0.7 at 1920x1088.
 
-`luna_recipes.json` holds tested values per LoRA; picking a LoRA fills that pass's strength, steps and shifts.
+`luna_recipes.json` holds tested values per LoRA; picking a LoRA fills that pass's strength, steps and shifts. A LoRA is
+matched by its file name, in whatever folder ComfyUI finds it.
+
+**Recipe menu (⚙ on the title bar)**
+- **Recipes**: the tested pairs (`luna_pair_recipes.json`) and your own. Pick one to see every value it sets; **Validate**
+  checks it, **Apply** writes the widgets and the `sampler_name` of the KSamplerSelect nodes wired into `sampler_low` and
+  `sampler_high`. A recipe whose LoRA is not installed says "missing" and cannot be applied.
+- **Custom**: pick the two LoRAs, strengths, samplers and the final size. The node recommends the hand-over sigma (the
+  lowest sigma point both LoRAs' schedulers make that leaves pass 2 two of its own steps), the steps per pass and a
+  `lowres_scale` that puts pass 1 at about 1 MP (the size is read from Luna-H3-Canvas, or typed). A LoRA with no known
+  sigma points, or with a custom list (Pika), gets the step split (`handover_sigma` 0). Every value can be changed; a
+  changed one is marked "yours ↺".
+- **Save as recipe**: after a clip you judged, save what the node runs now, with what it was tested on and your verdict.
+  Saved recipes live in ComfyUI's `user\default\luna_sampler_recipes.json`, so a pack update never touches them.
+- The readout names the recipe while the widgets still match it.
 
 `high_res_model` (optional): not connected, pass 2 uses `model`. Connected, pass 2 clones it and adds its own LoRA and
 shifts; pass 1 still uses `model`. Both must be MiniMax H3. Use it for a LoRA that only one pass should get. Tested

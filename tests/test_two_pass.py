@@ -324,5 +324,41 @@ class ShrinkKeyframeTests(unittest.TestCase):
         self.assertEqual(small.dtype, torch.float16)
 
 
+class RecipeMenuPointTests(unittest.TestCase):
+    """The menu's sigma points come from ComfyUI's calculate_sigmas, so these run with ComfyUI loaded."""
+
+    def test_dmad_points_and_todays_recommendation(self):
+        import luna_recipes
+
+        recipes = luna_recipes.load_recipes()
+        d8 = "minimax_h3_DMAD_8step_full_lora_avg_rank_58_bf16.safetensors"
+        d4 = "elsewhere/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
+        points = [round(p, 4) for p in luna_recipes.sigma_points(luna_recipes.recipe_for(d8, recipes))]
+        self.assertEqual(points, [1.0, 0.9882, 0.973, 0.9524, 0.9231, 0.878, 0.8, 0.6316, 0.0])
+        out = luna_recipes.recommend(d8, d4, 1920, 1088, recipes)
+        v = out["values"]
+        self.assertEqual(v["handover_sigma"], 0.923077)
+        self.assertEqual((v["total_steps"], v["transition"], v["lowres_scale"]), (6, 4, 0.7))
+        self.assertEqual((v["scheduler_low"], v["scheduler_high"]), ("simple", "simple"))
+        natural = luna_recipes.load_pair_recipes()[0]
+        for key in ("handover_sigma", "total_steps", "transition", "lowres_scale"):
+            self.assertEqual(v[key], natural[key], key)
+
+    def test_handover_lands_on_both_dmad_grids(self):
+        # The existing hand-over placement, at 0.923077 with 4 / 2 on shift 12 `simple`, gives the LoRAs' own points.
+        model = tiny_h3_model()
+        armed = luna_sampler_shift(model)
+        low = arm_sigmas(armed, "simple", 6, 4, True, handover=0.923077)
+        high = arm_sigmas(armed, "simple", 6, 4, False, handover=0.923077)
+        self.assertEqual([round(float(s), 3) for s in low], [1.0, 0.988, 0.973, 0.952, 0.923])
+        self.assertEqual([round(float(s), 3) for s in high], [0.923, 0.8, 0.0])
+
+
+def luna_sampler_shift(model):
+    import luna_sampler
+
+    return luna_sampler._apply_shift(model, 12.0, 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()

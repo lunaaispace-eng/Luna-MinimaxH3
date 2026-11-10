@@ -147,6 +147,8 @@ function resolve(node) {
         notes.push(`H3 video makes ${floor(width)}x${floor(height)}`);
     }
 
+    // Luna-H3-Sampler's recipe menu reads the final size from here (its width / height outputs).
+    node.lunaCanvasSize = [width, height];
     return { width, height, length, seconds, outputFps: FPS * factor, factor, notes, pair };
 }
 
