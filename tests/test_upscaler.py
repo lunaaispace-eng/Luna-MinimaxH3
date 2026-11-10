@@ -183,6 +183,30 @@ class TemporalPadTests(unittest.TestCase):
         self.assertTrue(calls and calls[0][0] == 40)
 
 
+class PrecisionTests(unittest.TestCase):
+    """The upscaler runs in its checkpoint's own precision on a GPU (Peter, 2026-11-10)."""
+
+    def test_file_dtype_is_kept_through_the_load(self):
+        for dtype in (torch.float16, torch.bfloat16, torch.float32):
+            with self.subTest(dtype=dtype):
+                state = {k: v.to(dtype) for k, v in small_model().state_dict().items()}
+                self.assertEqual(up._model_from_state_dict(state).file_dtype, dtype)
+
+    def test_fp8_file_counts_as_fp16(self):
+        state = {k: v.to(torch.float8_e4m3fn) for k, v in small_model().state_dict().items()}
+        self.assertEqual(up._model_from_state_dict(state).file_dtype, torch.float16)
+
+    def test_run_dtype(self):
+        cuda = torch.device("cuda")
+        self.assertEqual(up._run_dtype(torch.bfloat16, torch.device("cpu")), torch.float32)
+        self.assertEqual(up._run_dtype(torch.float16, cuda), torch.float16)
+        self.assertEqual(up._run_dtype(torch.float32, cuda), torch.float32)
+        with patch.object(up.torch.cuda, "is_bf16_supported", return_value=True):
+            self.assertEqual(up._run_dtype(torch.bfloat16, cuda), torch.bfloat16)
+        with patch.object(up.torch.cuda, "is_bf16_supported", return_value=False):
+            self.assertEqual(up._run_dtype(torch.bfloat16, cuda), torch.float16)
+
+
 class TemporalWindowTests(unittest.TestCase):
     """Each chunk reads `overlap` frames of context on both sides of the frames it writes."""
 

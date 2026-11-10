@@ -30,6 +30,7 @@ SOFTWARE.
 from __future__ import annotations
 
 import gc
+import logging
 import os
 import re
 from threading import Lock
@@ -385,10 +386,33 @@ def _model_from_state_dict(state) -> LatentResizer3D:
     # Avoid allocating a second full float32 copy of a large fp16 checkpoint.
     with torch.device("meta"):
         model = LatentResizer3D(**config)
+    file_dtype = _file_dtype(state)
     state = {key: value.to(torch.float16) if value.dtype == torch.float8_e4m3fn else value
              for key, value in state.items()}
     model.load_state_dict(state, strict=True, assign=True)
+    model.file_dtype = file_dtype  # the cached model is cast for each run, so keep the checkpoint's own precision
     return model.eval().requires_grad_(False)
+
+
+def _file_dtype(state) -> torch.dtype:
+    """The checkpoint's precision, read from conv_in (fp8 files are loaded as fp16)."""
+    dtype = state["conv_in.weight"].dtype
+    if dtype in (torch.float16, torch.bfloat16, torch.float32):
+        return dtype
+    return torch.float32 if dtype == torch.float64 else torch.float16
+
+
+def _run_dtype(file_dtype: torch.dtype, device: torch.device) -> torch.dtype:
+    """Run in the checkpoint's own precision on a GPU (Peter, 2026-11-10: "Yes, file's precision"); fp32 on the CPU.
+
+    The 10-29 build always ran fp16 on a GPU (LBH-123-AI's default), so a bf16 file was converted on load.
+    A bf16 file falls back to fp16 only on a GPU without bf16.
+    """
+    if device.type == "cpu":
+        return torch.float32
+    if file_dtype == torch.bfloat16 and device.type == "cuda" and not torch.cuda.is_bf16_supported():
+        return torch.float16
+    return file_dtype
 
 
 def _load_model(name: str) -> LatentResizer3D:
@@ -429,7 +453,8 @@ def learned_latent_lift(z: torch.Tensor, out_hw: tuple[int, int], model_name: st
     with _MODEL_LOCK:
         model = _load_model(model_name)
         device = mm.get_torch_device()
-        dtype = torch.float16 if device.type != "cpu" and mm.should_use_fp16(device) else torch.float32
+        dtype = _run_dtype(getattr(model, "file_dtype", torch.float16), device)
+        logging.info("[Luna-H3-Sampler] upscaler %s runs in %s on %s", model_name, str(dtype).replace("torch.", ""), device)
         normalized = output = mean = std = None
         try:
             if device.type != "cpu":
