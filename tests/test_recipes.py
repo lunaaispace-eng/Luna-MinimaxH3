@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from luna_recipes import check_values, load_recipes  # noqa: E402
+from luna_recipes import RECIPE_FIELDS, check_values, load_recipes  # noqa: E402
 
 DMAD = "MiniMaxH3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
 
@@ -33,11 +33,15 @@ def values(low="none", high="none", total=12, transition=8, scheduler="simple", 
 class RecipeTests(unittest.TestCase):
     def test_load_seed_entry(self):
         recipes = load_recipes()
-        self.assertEqual(set(recipes), {DMAD})
+        self.assertIn(DMAD, recipes)
+        self.assertEqual(len(recipes), 6)
+        for name, item in recipes.items():
+            self.assertEqual(set(item), set(RECIPE_FIELDS), name)
+            self.assertLess(item["transition"], item["total_steps"], name)
         entry = recipes[DMAD]
-        self.assertEqual(entry["strength"], 0.8)
-        self.assertEqual(entry["total_steps"], 12)
-        self.assertIsNone(entry["transition"])
+        self.assertEqual(entry["strength"], 1.0)
+        self.assertEqual(entry["total_steps"], 6)
+        self.assertEqual(entry["transition"], 4)
         self.assertEqual(entry["shift"], 12.0)
         self.assertEqual(entry["audio_shift"], 2.0)
         self.assertEqual(entry["sampler"], "er_sde")
@@ -75,12 +79,12 @@ class RecipeTests(unittest.TestCase):
         _errors, warnings = check_values(values(low="missing.safetensors", high="none"))
         self.assertEqual(warnings, ["pass 1 missing.safetensors: no recipe"])
 
-        clean, quiet = check_values(values(high=DMAD, audio_shift=2.0))
+        clean, quiet = check_values(values(high=DMAD, audio_shift=2.0, strength=1.0, total=6, transition=4))
         self.assertEqual(clean, [])
         self.assertEqual(quiet, [])
 
-        _errors, off = check_values(values(high=DMAD, audio_shift=2.0, total=8, transition=5))
-        self.assertEqual(off, [f"pass 2 {DMAD} recipe: total_steps 12, set 8"])
+        _errors, off = check_values(values(high=DMAD, audio_shift=2.0, strength=1.0, total=8, transition=4))
+        self.assertEqual(off, [f"pass 2 {DMAD} recipe: total_steps 6, set 8"])
 
 
 if __name__ == "__main__":

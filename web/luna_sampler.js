@@ -18,7 +18,7 @@ const WATCH = new Set([
     "audio_shift_low", "audio_shift_high",
     "cfg_low", "cfg_high",
     "scheduler_low", "scheduler_high",
-    "total_steps", "transition", "highres_denoise",
+    "total_steps", "transition", "highres_denoise", "handover_sigma",
 ]);
 
 // A workflow saved before each pass had its own scheduler stores 21 widget values in this order. The new
@@ -168,6 +168,8 @@ function scheduleLine(node) {
     const total = Number(widgetValue(node, "total_steps"));
     const transition = Number(widgetValue(node, "transition"));
     let line = `pass 1: steps 1-${transition} (low) / pass 2: steps ${transition + 1}-${total} (high)`;
+    const handover = Number(widgetValue(node, "handover_sigma"));
+    if (Number.isFinite(handover) && handover > 0) return `${line}, hand-over at sigma ${handover}`;
     const denoise = Number(widgetValue(node, "highres_denoise"));
     if (Number.isFinite(denoise) && denoise < 1) line += `, denoise ${denoise}`;
     return line;

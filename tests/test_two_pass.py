@@ -83,6 +83,57 @@ class TwoPassTests(unittest.TestCase):
         lower = arm_sigmas(self.model, "simple", 8, 5, low=False, denoise=0.5)
         self.assertLess(float(lower[0]), float(b[0]))
 
+    def test_handover_sigma_meets_exactly_and_keeps_the_step_counts(self):
+        for sched in ("simple", "linear_quadratic", "beta", "normal"):
+            for total, transition, h in ((12, 9, 0.6), (8, 5, 0.6), (6, 3, 0.8), (4, 1, 0.3)):
+                with self.subTest(sched=sched, total=total, transition=transition, h=h):
+                    low = arm_sigmas(self.model, sched, total, transition, low=True, handover=h)
+                    high = arm_sigmas(self.model, sched, total, transition, low=False, handover=h)
+                    self.assertEqual(low.numel(), transition + 1)
+                    self.assertEqual(high.numel(), total - transition + 1)
+                    self.assertEqual(float(low[0]), 1.0)
+                    self.assertAlmostEqual(float(low[-1]), h, places=6)
+                    self.assertEqual(float(low[-1]), float(high[0]))
+                    self.assertEqual(float(high[-1]), 0.0)
+                    self.assertTrue(bool((low[1:] < low[:-1]).all()))
+                    self.assertTrue(bool((high[1:] < high[:-1]).all()))
+
+    def test_handover_sigma_values_for_peters_schedule(self):
+        # 12 steps, transition 9, linear_quadratic, shift 12 (the harness model's shift): plan handover-sigma.md.
+        low = arm_sigmas(self.model, "linear_quadratic", 12, 9, low=True, handover=0.6)
+        high = arm_sigmas(self.model, "linear_quadratic", 12, 9, low=False, handover=0.6)
+        self.assertEqual([round(float(x), 3) for x in low],
+                         [1.0, 0.994, 0.989, 0.984, 0.978, 0.943, 0.864, 0.768, 0.677, 0.6])
+        self.assertEqual([round(float(x), 3) for x in high], [0.6, 0.527, 0.193, 0.0])
+
+    def test_handover_sigma_reaches_both_passes_and_wins_over_denoise(self):
+        seen, (latent, _) = self.spy_sigmas(total=8, transition=5, handover_sigma=0.6, highres_denoise=0.5)
+        self.assertTrue(torch.equal(seen[0][1], arm_sigmas(self.model, "simple", 8, 5, low=True, handover=0.6)))
+        self.assertTrue(torch.equal(seen[1][1], arm_sigmas(self.model, "simple", 8, 5, low=False, handover=0.6)))
+        self.assertTrue(torch.isfinite(streams(latent)[0]).all())
+        self.assertTrue(torch.isfinite(streams(latent)[1]).all())
+
+    def test_no_handover_sigma_is_todays_split_bit_for_bit(self):
+        full = comfy.samplers.calculate_sigmas(self.model.get_model_object("model_sampling"), "linear_quadratic", 8)
+        self.assertTrue(torch.equal(arm_sigmas(self.model, "linear_quadratic", 8, 5, low=True, handover=None), full[:6]))
+        self.assertTrue(torch.equal(arm_sigmas(self.model, "linear_quadratic", 8, 5, low=False, handover=None), full[5:]))
+
+    def test_handover_sigma_with_one_kl_optimal_step(self):
+        low = arm_sigmas(self.model, "kl_optimal", 4, 1, low=True, handover=0.6)
+        self.assertEqual(float(low[0]), 1.0)
+        self.assertAlmostEqual(float(low[-1]), 0.6, places=6)
+        self.assertEqual(low.numel(), 2)
+        high = arm_sigmas(self.model, "kl_optimal", 2, 1, low=False, handover=0.6)
+        self.assertTrue(torch.isfinite(high).all())
+        self.assertAlmostEqual(float(high[0]), 0.6, places=6)
+        self.assertEqual(float(high[-1]), 0.0)
+
+    def test_bad_handover_sigma_refused(self):
+        for bad in (0.0, 1.0, 1.5, -0.1):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, "handover_sigma"):
+                    self.run_two_pass(handover_sigma=bad)
+
     def test_soft_video_mask_stays_soft_in_pass_1(self):
         mask = torch.full((1, 1, 2, 4, 4), 0.25)
         _, low_latent = self.run_two_pass(av_latent(video_mask=mask))

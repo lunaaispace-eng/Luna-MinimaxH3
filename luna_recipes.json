@@ -1,14 +1,74 @@
 {
+  "MiniMaxH3/minimax_h3_DMAD_8step_full_lora_avg_rank_58_bf16.safetensors": {
+    "strength": 1.0,
+    "total_steps": 6,
+    "transition": 4,
+    "shift": 12.0,
+    "audio_shift": 2.0,
+    "sampler": "lcm",
+    "scheduler": "simple",
+    "cfg": 1.0,
+    "source": "Peter 2026-11-10, today's conclusion (SPEC Decisions log): base minimax_h3_ref2va_int8_convrot, pass 1 DMAD 8-step lcm, pass 2 DMAD 4-step er_sde, handover_sigma 0.923077, lowres_scale 0.7, 2 MP; M1_dmad8_dmad4_newsheet_orig_int8_5s, 133.7 s; its metadata: 8 steps, shift 12 / audio 2, re-noise step rule",
+    "label": "TESTED"
+  },
   "MiniMaxH3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors": {
-    "strength": 0.8,
-    "total_steps": 12,
-    "transition": null,
+    "strength": 1.0,
+    "total_steps": 6,
+    "transition": 4,
     "shift": 12.0,
     "audio_shift": 2.0,
     "sampler": "er_sde",
     "scheduler": "simple",
     "cfg": 1.0,
-    "source": "Snow_Minimax_setup_24Oct.json (Peter, sounds well); audio 2 = the DMAD card (shift 12 / audio 2), Peter 2026-10-29: DMAD always takes its recommended audio shift",
+    "source": "Peter 2026-11-10, today's conclusion (SPEC Decisions log): base minimax_h3_ref2va_int8_convrot, pass 1 DMAD 8-step lcm, pass 2 DMAD 4-step er_sde, handover_sigma 0.923077, lowres_scale 0.7, 2 MP; M1_dmad8_dmad4_newsheet_orig_int8_5s, 133.7 s; earlier alone: Snow_Minimax_setup_24Oct.json, 0.8, 12 steps, er_sde, simple (Peter, sounds well); audio 2 = the DMAD card (Peter 2026-10-29: DMAD always takes its recommended audio shift)",
+    "label": "TESTED"
+  },
+  "MiniMaxH3/pika_h3_flex_ref2va_v1_avg_rank_55_bf16.safetensors": {
+    "strength": 1.0,
+    "total_steps": 8,
+    "transition": 5,
+    "shift": 12.0,
+    "audio_shift": 3.0,
+    "sampler": "lcm",
+    "scheduler": "linear_quadratic",
+    "cfg": 1.0,
+    "source": "Pika ref2va rank 55 in pass 1, Pika fl2va in pass 2, both 1.0, lcm, linear_quadratic, 8 / 5: clean on 2026-11-02 (_00017, _00034, Luna-Research h3/2026-10-31-h3-new-tools/results.md); 2026-11-10 at lowres_scale 0.7 on minimax_h3_ref2va_int8_convrot: smoothest and sharpest, but washed against DMAD (Peter); lowres_scale 0.5 is dropped for 2 MP (SPEC)",
+    "label": "TESTED"
+  },
+  "MiniMaxH3/pika_h3_flex_fl2va_v1_bf16.safetensors": {
+    "strength": 1.0,
+    "total_steps": 8,
+    "transition": 5,
+    "shift": 12.0,
+    "audio_shift": 3.0,
+    "sampler": "lcm",
+    "scheduler": "linear_quadratic",
+    "cfg": 1.0,
+    "source": "Pika ref2va rank 55 in pass 1, Pika fl2va in pass 2, both 1.0, lcm, linear_quadratic, 8 / 5: clean on 2026-11-02 (_00017, _00034, Luna-Research h3/2026-10-31-h3-new-tools/results.md); 2026-11-10 at lowres_scale 0.7 on minimax_h3_ref2va_int8_convrot: smoothest and sharpest, but washed against DMAD (Peter); lowres_scale 0.5 is dropped for 2 MP (SPEC)",
+    "label": "TESTED"
+  },
+  "MiniMaxH3/minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors": {
+    "strength": null,
+    "total_steps": 12,
+    "transition": 9,
+    "shift": 12.0,
+    "audio_shift": 3.0,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "cfg": 1.0,
+    "source": "lightx in both passes at 0.6 (pass 1) / 0.8 (pass 2), euler, simple, 12 / 9, shift 12 / 3, pass 1 at 1344x768: recipe N2 (U3; Peter: \"T6 is like she held 1cm closer the mic, resti is identical\") and, with a locked song, E1 (Luna-Research h3/2026-10-31-h3-new-tools/recipes.md); strength differs per pass, so it is left null; ref2v rank 20 for references",
+    "label": "TESTED"
+  },
+  "MiniMaxH3/minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors": {
+    "strength": null,
+    "total_steps": 12,
+    "transition": 9,
+    "shift": 12.0,
+    "audio_shift": 3.0,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "cfg": 1.0,
+    "source": "lightx in both passes at 0.6 (pass 1) / 0.8 (pass 2), euler, simple, 12 / 9, shift 12 / 3, pass 1 at 1344x768: recipe N2 (U3; Peter: \"T6 is like she held 1cm closer the mic, resti is identical\") and, with a locked song, E1 (Luna-Research h3/2026-10-31-h3-new-tools/recipes.md); strength differs per pass, so it is left null; fl2v rank 21 for a first frame",
     "label": "TESTED"
   }
 }

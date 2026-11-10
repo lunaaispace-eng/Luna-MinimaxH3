@@ -1,7 +1,8 @@
 """SelfLift two-resolution sampling for MiniMax H3, on one schedule split at the transition.
 
 `total_steps` is one schedule. The first `transition` steps run at low resolution (pass 1), the rest at high
-resolution (pass 2). Each arm computes that schedule on its own model chain (its LoRA and shift node), so each pass
+resolution (pass 2). With `handover_sigma` the split is a noise level instead: pass 1 runs `transition` steps from 1 down to
+it, pass 2 the remaining steps from it to 0. Each arm computes that schedule on its own model chain (its LoRA and shift node), so each pass
 runs on sigmas built for its own shift. Both passes run inside ComfyUI's own sampler, so any SAMPLER works.
 
 The hand-over between the passes is exact flow arithmetic, not a sampler step:
@@ -14,6 +15,7 @@ The hand-over between the passes is exact flow arithmetic, not a sampler step:
 """
 
 import logging
+import math
 
 import torch
 
@@ -53,14 +55,48 @@ def _model_sampling(model, name):
     return ms
 
 
-def arm_sigmas(model, scheduler, total_steps, transition, low, denoise=None):
+def handover_sigmas(ms, scheduler, steps, sigma_from, sigma_to):
+    """`steps` steps of `scheduler` from `sigma_from` down to `sigma_to`, keeping the scheduler's shape on this shift.
+
+    The scheduler's own full schedule is taken to timestep space (the inverse of the shift), placed between the two ends
+    there, and shifted back. The ends are exact, so pass 1 and pass 2 meet at the same sigma.
+    """
+    base = comfy.samplers.calculate_sigmas(ms, scheduler, steps).cpu().double()
+    shift = float(getattr(ms, "shift", 1.0))
+    unshift = lambda s: comfy.model_sampling.time_snr_shift(1.0 / shift, s)
+    t = unshift(base)
+    span = float(t[0] - t[-1])
+    if span <= 0.0:
+        raise ValueError(f"Luna-H3-Sampler: scheduler {scheduler} gives no range to place the hand-over in")
+    t_from = float(unshift(torch.tensor(float(sigma_from), dtype=torch.float64)))
+    t_to = float(unshift(torch.tensor(float(sigma_to), dtype=torch.float64)))
+    t = t_to + (t_from - t_to) * (t - t[-1]) / span
+    out = comfy.model_sampling.time_snr_shift(shift, t)
+    out[0], out[-1] = float(sigma_from), float(sigma_to)
+    return out.float()
+
+
+def arm_sigmas(model, scheduler, total_steps, transition, low, denoise=None, handover=None):
     """The arm's share of one `total_steps` schedule, computed on the arm's own model_sampling (its shift).
 
     low=True: sigmas[0 .. transition]. low=False: sigmas[transition .. end], or, with `denoise`, the last
     `total_steps - transition` steps of the whole schedule stretched to `int(total_steps / denoise)` steps, so 1.0 is
     exactly the transition slice and lower values start pass 2 at a lower sigma (it changes the lifted video less).
+    With `handover` (a sigma in (0, 1)), pass 1 runs `transition` steps from the schedule's first sigma down to it and
+    pass 2 runs `total_steps - transition` steps from it to 0; `denoise` is then ignored.
     """
     ms = model.get_model_object("model_sampling")
+    if handover is not None:
+        if not 0.0 < float(handover) < 1.0:
+            raise ValueError("Luna-H3-Sampler: handover_sigma must be above 0 and below 1 (0 turns it off)")
+        if low:
+            start = float(comfy.samplers.calculate_sigmas(ms, scheduler, transition)[0])
+            if not math.isfinite(start):  # kl_optimal divides by steps - 1, so 1 step gives NaN
+                start = float(ms.sigma_max)
+            if not float(handover) < start:
+                raise ValueError("Luna-H3-Sampler: handover_sigma must be below the schedule's first sigma")
+            return handover_sigmas(ms, scheduler, transition, start, float(handover))
+        return handover_sigmas(ms, scheduler, total_steps - transition, float(handover), 0.0)
     if low:
         return comfy.samplers.calculate_sigmas(ms, scheduler, total_steps).cpu()[: transition + 1]
     steps = total_steps - transition
@@ -177,12 +213,13 @@ def two_pass_sample(low_res_model, positive, negative, vae, latent_image, sample
                     total_steps, transition, noise_seed, cfg_low, cfg_high, lowres_scale, rho, w_min, w_max,
                     latent_lifter=None, high_res_model=None, low_res_head=None, highres_denoise=None,
                     sigmas_low=None, sigmas_high=None, lift=None, positive_low=None, negative_low=None,
-                    scheduler_high=None):
+                    scheduler_high=None, handover_sigma=None):
     """Return (latent, low_res_latent), both ComfyUI LATENT dicts in VAE space.
 
     `scheduler` builds pass 1's sigmas; `scheduler_high` builds pass 2's and defaults to `scheduler`.
     `sigmas_low` / `sigmas_high` override the computed schedules. `lift` defaults to `luna_lift.lift_video`.
     `positive_low` / `negative_low` replace `positive` / `negative` in pass 1 only: conditioning built at pass 1's size.
+    `handover_sigma` (None or a sigma in (0, 1)) splits the schedule at that noise level instead of at `transition`.
     """
     if not 1 <= transition < total_steps:
         raise ValueError("Luna-H3-Sampler: transition must be at least 1 and below total_steps")
@@ -194,10 +231,10 @@ def two_pass_sample(low_res_model, positive, negative, vae, latent_image, sample
     ms_low = _model_sampling(low_res_model, "low_res_model")
     ms_high = _model_sampling(high_model, "high_res_model")
     if sigmas_low is None:
-        sigmas_low = arm_sigmas(low_res_model, scheduler, total_steps, transition, low=True)
+        sigmas_low = arm_sigmas(low_res_model, scheduler, total_steps, transition, low=True, handover=handover_sigma)
     if sigmas_high is None:
         sigmas_high = arm_sigmas(high_model, scheduler_high or scheduler, total_steps, transition, low=False,
-                                 denoise=highres_denoise)
+                                 denoise=highres_denoise, handover=handover_sigma)
     _check_sigmas(sigmas_low, "sigmas_low")
     _check_sigmas(sigmas_high, "sigmas_high")
     if not 0.0 < float(sigmas_low[-1]) < 1.0:

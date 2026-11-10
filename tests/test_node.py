@@ -26,7 +26,7 @@ INPUT_ORDER = [
     "lora_high", "strength_high", "shift_high", "audio_shift_high", "sampler_high", "cfg_high", "scheduler_high",
     "total_steps", "transition", "highres_denoise", "noise_seed",
     "lowres_scale", "upscaler_model", "rho", "w_min", "w_max",
-    "low_res_head", "sigmas_low", "sigmas_high", "high_res_model", "positive_low", "negative_low",
+    "low_res_head", "sigmas_low", "sigmas_high", "high_res_model", "positive_low", "negative_low", "handover_sigma",
 ]
 
 
@@ -92,6 +92,10 @@ class NodeTests(unittest.TestCase):
         self.assertFalse(by_id["high_res_model"].lazy)
         self.assertTrue(by_id["positive_low"].optional)
         self.assertTrue(by_id["negative_low"].optional)
+        self.assertTrue(by_id["handover_sigma"].optional)
+        self.assertEqual(by_id["handover_sigma"].default, 0.6)
+        self.assertEqual((by_id["handover_sigma"].min, by_id["handover_sigma"].max), (0.0, 0.95))
+        self.assertIn("handover_sigma", schema.description)
 
     def test_low_res_head_is_lazy_only_when_connected(self):
         self.assertEqual(LunaH3Sampler.check_lazy_status(low_res_head=None), ["low_res_head"])
@@ -179,6 +183,7 @@ class NodeTests(unittest.TestCase):
             rho=0.0,
             w_min=0.5,
             w_max=1.0,
+            handover_sigma=0.0,  # the step split; the hand-over tests set it
         )
         args.update(overrides)
         return args
@@ -339,6 +344,53 @@ class NodeTests(unittest.TestCase):
             text = LunaH3Sampler.execute(**self.kwargs(highres_denoise=0.5)).ui.as_dict()["text"][0]
         self.assertEqual(seen["denoise"], 0.5)
         self.assertIn("highres_denoise 0.50", text)
+
+    def test_handover_sigma_splits_both_passes_at_that_noise_level(self):
+        seen = {}
+        real = luna_sampler.two_pass_sample
+
+        def spy(*args, **kwargs):
+            seen["low_model"], seen["high_model"] = args[0], kwargs["high_res_model"]
+            seen["handover"] = kwargs["handover_sigma"]
+            return real(*args, **kwargs)
+
+        with patch("luna_sampler.two_pass_sample", spy):
+            text = LunaH3Sampler.execute(**self.kwargs(
+                scheduler_low="linear_quadratic", scheduler_high="linear_quadratic", total_steps=12, transition=9,
+                handover_sigma=0.6, highres_denoise=0.5)).ui.as_dict()["text"][0]
+        self.assertEqual(seen["handover"], 0.6)
+        low = luna_sampler.arm_sigmas(seen["low_model"], "linear_quadratic", 12, 9, low=True, handover=0.6)
+        high = luna_sampler.arm_sigmas(seen["high_model"], "linear_quadratic", 12, 9, low=False, handover=0.6)
+        self.assertEqual((low.numel(), high.numel()), (10, 4))
+        self.assertIn("sigmas " + luna_sampler._sigma_text(low), text)
+        self.assertIn("sigmas " + luna_sampler._sigma_text(high), text)
+        self.assertIn("handover_sigma 0.60 (highres_denoise ignored)", text)
+        self.assertIn("hand-over sigma 0.6000 -> 0.6000", text)
+        self.assertIn(f"pass 1 last estimate from sigma {float(low[-2]):.4f}", text)
+
+    def test_handover_sigma_not_named_when_both_lists_are_wired(self):
+        custom = torch.tensor([1.0, 0.5, 0.0])
+        with patch("luna_sampler.two_pass_sample", lambda *a, **k: (a[4], a[4])):
+            text = LunaH3Sampler.execute(**self.kwargs(handover_sigma=0.6, sigmas_low=torch.tensor([1.0, 0.5]),
+                                                       sigmas_high=torch.tensor([0.5, 0.0]))).ui.as_dict()["text"][0]
+        self.assertNotIn("handover_sigma", text)
+        self.assertIn("hand-over sigma 0.5000 -> 0.5000", text)
+
+    def test_handover_sigma_default_and_zero(self):
+        seen = {}
+
+        def fake_sample(*args, **kwargs):
+            seen["handover"] = kwargs["handover_sigma"]
+            return args[4], args[4]
+
+        args = self.kwargs()
+        del args["handover_sigma"]  # an API prompt saved before the widget
+        with patch("luna_sampler.two_pass_sample", fake_sample):
+            LunaH3Sampler.execute(**args)
+        self.assertEqual(seen["handover"], 0.6)
+        with patch("luna_sampler.two_pass_sample", fake_sample):
+            LunaH3Sampler.execute(**self.kwargs(handover_sigma=0.0))
+        self.assertIsNone(seen["handover"])
 
     def test_impossible_transition_raises(self):
         with patch("luna_sampler.two_pass_sample") as sample:

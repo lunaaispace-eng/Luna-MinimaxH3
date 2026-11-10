@@ -34,12 +34,18 @@ Pass 1 runs the first transition steps of one schedule at the low grid. Pass 2 r
 
 Pass 1 inputs are lora_low, strength_low, shift_low, audio_shift_low, sampler_low, cfg_low and scheduler_low. Pass 2 inputs are lora_high, strength_high, shift_high, audio_shift_high, sampler_high, cfg_high and scheduler_high. total_steps, transition, highres_denoise and noise_seed belong to the one shared schedule: pass 1 takes its first transition steps from its own scheduler, pass 2 the rest from its own. lowres_scale, upscaler_model, rho, w_min and w_max belong to the lift. upscaler_model selects the learned H3 latent upscaler; none uses nearest. low_res_head is the previous scene's low-grid tail. sigmas_low and sigmas_high replace the computed schedules when they are connected.
 
+handover_sigma splits the schedule at a noise level instead of a step number: pass 1 runs its transition steps from 1 down to it, pass 2 runs the remaining steps from it to 0, each with its own scheduler's shape on its own shift. 0 splits by step number as before. While it is set, highres_denoise is ignored.
+
 Audio is one trajectory across both passes and finishes in pass 2, next to the full-size video. A locked song (audio mask 0) stays exact in both outputs. When sigmas_low ends at 0.01 or below, pass 1 has finished and pass 2 draws fresh noise for the audio too, as a native second pass does.
 
 positive_low and negative_low are optional: conditioning built at pass 1's size, used by pass 1 only.
 
 latent is the full-grid result. Connect it to a save node, or to the next scene as latent_image. low_res_latent is the low-grid video with that same finished audio. Connect it to the next scene's low_res_head.
 """
+
+
+# Peter, 2026-11-10 (SPEC › Decisions log): the hand-over by noise level, default 0.6.
+HANDOVER_DEFAULT = 0.6
 
 
 def _lora_names():
@@ -104,9 +110,12 @@ def _arm_model(model, lora_name, strength, shift, audio_shift, loaded):
     return armed
 
 
-def _readout(low, high, sigmas_low, sigmas_high, total_steps, transition, highres_denoise, warnings):
+def _readout(low, high, sigmas_low, sigmas_high, total_steps, transition, highres_denoise, warnings, handover=None):
     lines = [f"pass 1: steps 1-{transition} (low) / pass 2: steps {transition + 1}-{total_steps} (high)"]
-    if highres_denoise is not None and float(highres_denoise) < 1.0:
+    if handover is not None:
+        lines.append(f"handover_sigma {float(handover):.2f}"
+                     + (" (highres_denoise ignored)" if highres_denoise is not None and float(highres_denoise) < 1.0 else ""))
+    elif highres_denoise is not None and float(highres_denoise) < 1.0:
         lines.append(f"highres_denoise {float(highres_denoise):.2f}")
     for label, arm, sigmas in (("pass 1", low, sigmas_low), ("pass 2", high, sigmas_high)):
         lines.append(
@@ -115,6 +124,8 @@ def _readout(low, high, sigmas_low, sigmas_high, total_steps, transition, highre
             f"sigmas {_sigma_text(sigmas)}"
         )
     lines.append(f"hand-over sigma {float(sigmas_low[-1]):.4f} -> {float(sigmas_high[0]):.4f}")
+    if len(sigmas_low) >= 2:
+        lines.append(f"pass 1 last estimate from sigma {float(sigmas_low[-2]):.4f}")
     lines.extend(warnings)
     return "\n".join(lines)
 
@@ -339,6 +350,15 @@ class LunaH3Sampler(io.ComfyNode):
                     optional=True,
                     tooltip="Pass 1 negative, built from positive_low. Used only when cfg_low is above 1. Leave it disconnected to use negative.",
                 ),
+                io.Float.Input(
+                    "handover_sigma",
+                    default=HANDOVER_DEFAULT,
+                    min=0.0,
+                    max=0.95,
+                    step=0.01,
+                    optional=True,
+                    tooltip="Noise level where pass 1 hands over to pass 2. Pass 1 runs its transition steps from 1 down to it, pass 2 the rest from it to 0. 0 splits by step number. While set, highres_denoise is ignored.",
+                ),
             ],
             outputs=[
                 io.Latent.Output(
@@ -396,6 +416,7 @@ class LunaH3Sampler(io.ComfyNode):
         upscaler_model="none",
         positive_low=None,
         negative_low=None,
+        handover_sigma=HANDOVER_DEFAULT,
     ):
         low_arm = {
             "lora": lora_low,
@@ -428,14 +449,15 @@ class LunaH3Sampler(io.ComfyNode):
         total_steps = int(total_steps)
         transition = int(transition)
         denoise = None if float(highres_denoise) >= 1.0 else float(highres_denoise)
+        handover = float(handover_sigma) if handover_sigma is not None and float(handover_sigma) > 0.0 else None
         loaded = {}
         low_model = _arm_model(model, lora_low, strength_low, shift_low, audio_shift_low, loaded)
         high_base = model if high_res_model is None else high_res_model
         high_model = _arm_model(high_base, lora_high, strength_high, shift_high, audio_shift_high, loaded)
         used_low = sigmas_low if sigmas_low is not None else arm_sigmas(
-            low_model, scheduler_low, total_steps, transition, low=True)
+            low_model, scheduler_low, total_steps, transition, low=True, handover=handover)
         used_high = sigmas_high if sigmas_high is not None else arm_sigmas(
-            high_model, scheduler_high, total_steps, transition, low=False, denoise=denoise)
+            high_model, scheduler_high, total_steps, transition, low=False, denoise=denoise, handover=handover)
         latent, low_latent = two_pass_sample(
             low_model,
             positive,
@@ -465,8 +487,11 @@ class LunaH3Sampler(io.ComfyNode):
                            lambda z, hw: learned_latent_lift(z, hw, upscaler_model)),
             positive_low=positive_low,
             negative_low=negative_low,
+            handover_sigma=handover,
         )
-        text = _readout(low_arm, high_arm, used_low, used_high, total_steps, transition, denoise, warnings)
+        both_wired = sigmas_low is not None and sigmas_high is not None
+        text = _readout(low_arm, high_arm, used_low, used_high, total_steps, transition, denoise, warnings,
+                        None if both_wired else handover)
         text += "\npass 1 conditioning: " + ("positive" if positive_low is None else "positive_low")
         text += "\npass 2 model: " + ("model" if high_res_model is None else "high_res_model")
         text += f"\nupscaler: {upscaler_model}" + (" (nearest)" if upscaler_model == "none" else "")

@@ -42,7 +42,7 @@ test("readout file registers no second help, collapse or tint", () => {
 function samplerFunctions() {
     const src = readFileSync(join(root, "web", "luna_sampler.js"), "utf8")
         .replace(/^import .*$/gm, "");
-    const make = new Function("app", "LUNA", `${src}\nreturn { migrateSingleScheduler, recipeNotes };`);
+    const make = new Function("app", "LUNA", `${src}\nreturn { migrateSingleScheduler, recipeNotes, scheduleLine };`);
     return make({ registerExtension() {} }, {});
 }
 
@@ -110,4 +110,14 @@ test("the LoRA lists keep their folders: only the closed widget is shortened", (
     const src = code("luna_sampler.js");
     assert.ok(!src.includes("getOptionLabel"));
     assert.match(src, /defineProperty\(widget, "_displayValue"/);
+});
+
+test("the drawn readout names the hand-over sigma, and 0 keeps the step split", () => {
+    const { scheduleLine } = samplerFunctions();
+    const node = (values) => ({ widgets: Object.entries(values).map(([name, value]) => ({ name, value })) });
+    const base = { total_steps: 12, transition: 9, highres_denoise: 0.5 };
+    assert.equal(scheduleLine(node({ ...base, handover_sigma: 0.6 })),
+        "pass 1: steps 1-9 (low) / pass 2: steps 10-12 (high), hand-over at sigma 0.6");
+    assert.equal(scheduleLine(node({ ...base, handover_sigma: 0 })),
+        "pass 1: steps 1-9 (low) / pass 2: steps 10-12 (high), denoise 0.5");
 });
