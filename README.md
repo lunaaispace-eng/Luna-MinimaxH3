@@ -76,15 +76,15 @@ pass 2 refines detail.
 - Shared: `total_steps`, `transition`, `highres_denoise`, `noise_seed`, `lowres_scale`, `upscaler_model`, `rho`, `w_min`,
   `w_max`.
 - Optional: `low_res_head` (previous scene's `low_res_latent`), `sigmas_low`, `sigmas_high`, `high_res_model`,
-  `positive_low`, `negative_low`, `handover_sigma` (a widget, default 0.6).
+  `positive_low`, `negative_low`, `handover_sigma` (a widget, default 0).
 - Outputs: `latent` (full size) and `low_res_latent` (pass 1 on the low grid, for the next scene's `low_res_head`).
 
 ### How to use it
 
 **Where pass 2 starts**
-- `handover_sigma` above 0 (default 0.6): the hand-over is a noise level. Pass 1 runs its `transition` steps from 1 down to it,
+- `handover_sigma` above 0 (default 0, the step split; the ⚙ menu sets it per LoRA pair): the hand-over is a noise level. Pass 1 runs its `transition` steps from 1 down to it,
   pass 2 runs the remaining steps from it to 0, each with its own scheduler's shape on its own shift. `highres_denoise` is then
-  ignored. 0 splits the schedule by step number, as below. A workflow saved before this widget opens with 0.6.
+  ignored. 0 splits the schedule by step number, as below. A workflow saved before this widget opens with 0.
 - `handover_sigma` 0, `sigmas_high` empty and `highres_denoise` 1: pass 2 continues the same schedule from the transition.
 - `highres_denoise` below 1: pass 2 restarts lower and keeps more of pass 1's picture.
 - `sigmas_high` connected (ManualSigmas): pass 2 runs exactly that list; `highres_denoise` and `scheduler_high` are not used,

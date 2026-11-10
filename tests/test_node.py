@@ -93,7 +93,7 @@ class NodeTests(unittest.TestCase):
         self.assertTrue(by_id["positive_low"].optional)
         self.assertTrue(by_id["negative_low"].optional)
         self.assertTrue(by_id["handover_sigma"].optional)
-        self.assertEqual(by_id["handover_sigma"].default, 0.6)
+        self.assertEqual(by_id["handover_sigma"].default, 0.0)
         self.assertEqual((by_id["handover_sigma"].min, by_id["handover_sigma"].max), (0.0, 0.95))
         self.assertIn("handover_sigma", schema.description)
 
@@ -387,7 +387,7 @@ class NodeTests(unittest.TestCase):
         del args["handover_sigma"]  # an API prompt saved before the widget
         with patch("luna_sampler.two_pass_sample", fake_sample):
             LunaH3Sampler.execute(**args)
-        self.assertEqual(seen["handover"], 0.6)
+        self.assertIsNone(seen["handover"])  # default 0: the step split
         with patch("luna_sampler.two_pass_sample", fake_sample):
             LunaH3Sampler.execute(**self.kwargs(handover_sigma=0.0))
         self.assertIsNone(seen["handover"])
