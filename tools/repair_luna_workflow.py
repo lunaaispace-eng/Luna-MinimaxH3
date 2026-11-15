@@ -5,7 +5,7 @@
   LLMPrompt -> Luna-LLMPrompt. Widgets are unchanged (checked against the running server's object_info).
 - SelfLiftAvatarH3Sampler: the `low_res_head` input and `low_res_latent` output came from our old chain patch; the
   installed upstream node has neither. They are removed when unlinked.
-Titles are not touched (Peter: original node names).
+Titles are not touched (original node names are kept).
 
 Usage: python repair_luna_workflow.py <in.json> <out.json>
 """

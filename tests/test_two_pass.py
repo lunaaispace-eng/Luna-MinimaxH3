@@ -98,7 +98,7 @@ class TwoPassTests(unittest.TestCase):
                     self.assertTrue(bool((low[1:] < low[:-1]).all()))
                     self.assertTrue(bool((high[1:] < high[:-1]).all()))
 
-    def test_handover_sigma_values_for_peters_schedule(self):
+    def test_handover_sigma_values_for_the_decided_schedule(self):
         # 12 steps, transition 9, linear_quadratic, shift 12 (the harness model's shift): plan handover-sigma.md.
         low = arm_sigmas(self.model, "linear_quadratic", 12, 9, low=True, handover=0.6)
         high = arm_sigmas(self.model, "linear_quadratic", 12, 9, low=False, handover=0.6)

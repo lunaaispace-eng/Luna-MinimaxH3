@@ -80,7 +80,7 @@ def temporal_pad(x, overlap):
 
     Replicate padding repeated H3's causal first latent frame into a six-frame hold (five halo copies plus frame 0),
     and the 3D upscaler turned that still context into invented detail at the clip's start: a grid of glyph-like
-    marks on some seeds. Peter's own fix: opened with the fix in slmonker/selflift-Avatar issue #5, merged there as f1fdfa9 (2026-10-25); the LBH-123-AI
+    marks on some seeds. Our own fix: opened with the fix in slmonker/selflift-Avatar issue #5, merged there as f1fdfa9 (2026-10-25); the LBH-123-AI
     original this file comes from still pads with replicate, so keep this when updating from it;
     reimplemented here. Reflect needs the overlap to be shorter than the clip, so replicate stays as the fallback.
     """
@@ -403,7 +403,7 @@ def _file_dtype(state) -> torch.dtype:
 
 
 def _run_dtype(file_dtype: torch.dtype, device: torch.device) -> torch.dtype:
-    """Run in the checkpoint's own precision on a GPU (Peter, 2026-11-10: "Yes, file's precision"); fp32 on the CPU.
+    """Run in the checkpoint's own precision on a GPU (2026-11-10); fp32 on the CPU.
 
     The 10-29 build always ran fp16 on a GPU (LBH-123-AI's default), so a bf16 file was converted on load.
     A bf16 file falls back to fp16 only on a GPU without bf16.

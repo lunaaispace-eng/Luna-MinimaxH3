@@ -4,7 +4,7 @@ To UI files (2026-10-29): open ComfyUI, run `await comfyAPI.app.app.loadApiJson(
 the nodes, set `noise_seed` to fixed, then save `JSON.stringify(app.rootGraph.serialize())` as
 `example_workflows/<title>.json` (json.dump, indent 2).
 
-Peter, 2026-10-29: simple user workflows that show how Luna-H3-Sampler fits with ComfyUI core nodes and KJNodes, none
+2026-10-29: simple user workflows that show how Luna-H3-Sampler fits with ComfyUI core nodes and KJNodes, none
 of our other custom nodes. The model side follows the official Comfy MiniMax H3 templates (UNETLoader, CLIPLoader
 type minimax, two VAELoaders, MiniMaxH3ReferenceToVideo / MiniMaxH3ImageToVideo, VAEDecode + VAEDecodeAudio,
 CreateVideo, SaveVideo); the sampler section is Luna-H3-Sampler with the measured 2 MP recipe.
@@ -120,7 +120,7 @@ PROMPT_T2V = (
 
 
 def to_2k(width, height):
-    """Text to video in two stages, tested 2026-10-29 on an RTX 4090 (Peter: ours beats Kijai's chain at 1 MP; 2 MP
+    """Text to video in two stages, tested 2026-10-29 on an RTX 4090 (ours beats Kijai's chain at 1 MP; 2 MP
     is the best quality). Stage 1 is Luna-H3-Sampler at `width` x `height`. Stage 2 is Kijai's 2K refine from his
     two-stage workflow, unchanged: ComfyUI's MiniMaxH3LatentUpscaleWithModel to 2560x1440, then DMAD + the Open
     H3-Regenerate-2K refiner LoRA (rank 16) + sol-attn sparse attention, er_sde, sigmas 0.7, 0.494118, 0. Only the

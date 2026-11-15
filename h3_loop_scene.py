@@ -544,13 +544,13 @@ class LunaH3LoopScene(io.ComfyNode):
 
 # --------------------------------------------------------------------------- Luna-H3-LoopProfile
 
-# Defaults come from accepted recipes (a recipe is not a Peter decision unless he said so):
+# Defaults come from accepted recipes (a recipe is not a decision unless the user decided it):
 #  normal (v1.3): the accepted Elira and Shadow chain v2, Luna-Research long-video/2026-10-25-long-video/
 #    elira-shadow/chain.json: nodes 95 strength 0.6, 136 0.0, 131 0.8, 132 0.0, 99 steps 12 simple,
 #    102 transition_step 9; the unet, LoRA file and shifts 12 / 3 are the workflow defaults. Agrees with
 #    root SPEC.md "Fixed for every song": SelfLift schedule 12 steps, 9 low + 3 high.
-#  fast (V2): dojo-motion/renders/v2_std_dmad/scene_002_api.json, the take Peter accepted ("Sound is good,
-#    motion is better. So for fast moving use V2, for normal use 1.3"): V2 unet, DMAD full critic 0.8 in
+#  fast (V2): dojo-motion/renders/v2_std_dmad/scene_002_api.json, the accepted take (sound good, motion
+#    better: V2 for fast motion, 1.3 for normal): V2 unet, DMAD full critic 0.8 in
 #    node 95 as the only LoRA, 8 steps, transition 5, no high model, shifts 12 / 3.
 _RANK20 = "MiniMaxH3\\minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors"
 DEFAULT_PROFILES = {

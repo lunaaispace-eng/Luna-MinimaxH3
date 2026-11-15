@@ -1,7 +1,7 @@
 """Reference to video in two stages: Luna-H3-Sampler at 2 MP, then Kijai's 2K refine stage (API graph).
 
-Made 2026-10-29 for Peter: "Build  a portrait video with Elira using her image and background. Waist up, clear face
-and skin." (vertical, 2 MP to 2K, 5 s). Stage 1 = Luna-H3-Sampler with the measured 2 MP recipe (ref2v lightx2v
+Made 2026-10-29 for a portrait video with Elira using her image and background, waist up, clear face
+and skin (vertical, 2 MP to 2K, 5 s). Stage 1 = Luna-H3-Sampler with the measured 2 MP recipe (ref2v lightx2v
 turbo rank-20 LoRA 0.6 / 0.8, Euler, simple, 12 steps, transition 9, shift 12 / 3, learned upscaler). Stage 2 =
 `make_example_workflows.to_2k` (MiniMaxH3LatentUpscaleWithModel, DMAD + Open-H3-Regenerate-2K refiner rank 16,
 sol-attn, er_sde, sigmas 0.7, 0.494118, 0). The references are encoded twice: at the first-stage size and at the 2K

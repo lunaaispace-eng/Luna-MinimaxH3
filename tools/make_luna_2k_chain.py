@@ -1,11 +1,11 @@
 """Our sampler in Kijai's 2K chain: Luna-H3-Sampler at 2 MP, then Kijai's latent upscale to 2560x1440 and his
 refiner stage 2, unchanged.
 
-Peter, 2026-10-29: "until it runs what do we do to use our sampler ... i have a feeling it will be better".
+2026-10-29: use our sampler in the chain, expecting better results.
 Starts from Kijai's two-stage workflow as an API graph (`ui_to_api.py` of
 `D:\\Claude\\Luna-Research\\h3\\2026-10-29-kijai2stage_compare.json`) and replaces only his stage 1:
-- `EmptyMiniMaxH3LatentAV` becomes 1920x1088x124 (our 2 MP size); the text encoder becomes our nvfp4 one (Peter,
-  2026-10-29: "Ok, proceed with recomandation");
+- `EmptyMiniMaxH3LatentAV` becomes 1920x1088x124 (our 2 MP size); the text encoder becomes our nvfp4 one (2026-10-29,
+  on the recommendation);
 - Luna-H3-Sampler with the measured 2 MP recipe (turbo LoRA 0.6 / 0.8, Euler, simple, 12 steps, transition 9,
   shift 12 / 3, learned upscaler fp16, seed 101) on the model chain before Kijai's DMAD LoRA
   (UNETLoader -> MiniMaxChunkFeedForward -> ModelAttentionBackend);
@@ -50,7 +50,7 @@ def build(g, sigmas_node="150", lean=False, size=(1920, 1088)):
         g[nid]["inputs"]["filename_prefix"] = prefix
     if lean:
         # Only the 2K video is decoded (tiled) and saved: no 2 MP decode/save, no stacked comparison
-        # (Peter, 2026-10-29: "Yes" to measuring RAM with a lean graph).
+        # (2026-10-29: measuring RAM with a lean graph).
         for nid in ("10", "21", "145", "146", "147", "148", "149"):
             g.pop(nid, None)
         g["141"] = {"class_type": "VAEDecodeTiled", "inputs": {

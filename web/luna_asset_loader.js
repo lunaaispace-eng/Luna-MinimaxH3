@@ -310,9 +310,9 @@ function brighten(hex, targetL = 0.55, minS = 0.18, maxS = 0.72) {
     return `#${to(seg[0])}${to(seg[1])}${to(seg[2])}`;
 }
 
-// Accent derivation is OFF by default: Peti wants the amber buttons and green
-// <Picture N> badges regardless of the title colour, with the title left at
-// ComfyUI's default red like his other nodes. Set node._lunaDeriveAccent = true
+// Accent derivation is OFF by default: the amber buttons and green
+// <Picture N> badges stay regardless of the title colour, with the title left at
+// ComfyUI's default red like the other nodes. Set node._lunaDeriveAccent = true
 // (or flip DERIVE_ACCENT) to make the widget follow node.color again.
 const DERIVE_ACCENT = false;
 
@@ -1114,7 +1114,7 @@ function drawCtl(node, ctx) {
         ctx.lineWidth = live ? 1.6 : 1.2;
         ctx.stroke();
         // Amber glyphs on the steppers so the control reads as a control at a
-        // glance — Peti's ask was not having to hunt for it.
+        // glance, so nobody has to hunt for it.
         ctx.fillStyle = dead ? LUNA.muted : live ? LUNA.bg : (key === "num" ? LUNA.text : LUNA.accent);
         ctx.font = `bold ${key === "num" ? 14 : 17}px ${FONT}`;
         ctx.fillText(glyph, r[0] + r[2] / 2, r[1] + r[3] / 2 + (key === "num" ? 0.5 : 0));
@@ -1164,8 +1164,8 @@ function buildUI(node) {
     tl.className = "luna-al-tl";
     tl.style.display = "none";
     for (const ev of ["pointerdown", "keydown", "wheel"]) tl.addEventListener(ev, (e) => e.stopPropagation());
-    // Three rows, one per kind (Peter, 2026-10-16: "different timelines for image,
-    // video and audio" — chose "Three rows"): each with its own + add, its own
+    // Three rows, one per kind (2026-10-16: separate timelines for image,
+    // video and audio): each with its own + add, its own
     // cards, and its editor opening right under it. The shot timeline sits below.
     const vcards = document.createElement("div");
     vcards.className = "luna-al-cards";
@@ -2056,7 +2056,7 @@ function buildUI(node) {
                 // Percent, never measured pixels: ComfyUI scales DOM widgets with the canvas
                 // zoom, so getBoundingClientRect() is SCREEN pixels while style.left is the
                 // node's own pixels — at any zoom but 100% the window drifted off the pink
-                // selection it marks (Peter's screenshots, 2026-10-16).
+                // selection it marks (screenshots, 2026-10-16).
                 // Everything is placed relative to the visible part [v0, v1]; the
                 // waveform clips whatever lies outside it.
                 const v0 = V0(), v1 = V1(), sp = v1 - v0;

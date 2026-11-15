@@ -1,4 +1,4 @@
-"""Make `H3 Luna Sampler_Chain.json` from Peter's `H3 Luna Sampler_Main.json`: Main plus the clip chain, nothing else changed.
+"""Make `H3 Luna Sampler_Chain.json` from the user's `H3 Luna Sampler_Main.json`: Main plus the clip chain, nothing else changed.
 
     E:\\ComfyUI-Easy-Install\\python_embeded\\python.exe -I tools\\make_chain_workflow.py [--force]
 
@@ -14,14 +14,14 @@ Node ids of Main are found by type and title, not by number. Prints every change
 
     E:\\ComfyUI-Easy-Install\\python_embeded\\python.exe -I tools\\make_chain_workflow.py --add-clip-saves
 
-Stop and continue (plans\\chain-stop-continue.md): adds to the existing H3 Luna Sampler_Chain.json, keeping Peter's own edits
+Stop and continue (plans\\chain-stop-continue.md): adds to the existing H3 Luna Sampler_Chain.json, keeping the user's own edits
 (a fresh build adds the same): a second Luna-SaveVideo "Clip video", ChainJoin images + clip_audio -> one finished video per
 clip, `clip_00001.mp4` ..., in the chain's own folder `output/luna_h3_chain/chain` (cleared with the endings at a fresh clip 1);
 and ChainRemember save_whole_clip on. The file is copied to the pack's git-ignored `.work\\<name>.backup-<time>.json` first.
 
     E:\\ComfyUI-Easy-Install\\python_embeded\\python.exe -I tools\\make_chain_workflow.py --song-on-loader
 
-The song settings on the Asset Loader (2026-11-03, Peter: "it needs to be the other way around, set it in asset loader"):
+The song settings on the Asset Loader (2026-11-03: set in the asset loader, not in the chain):
 moves an existing H3 Luna Sampler_Chain.json to the new layout (a fresh build ends in the same one). Luna-H3-Chain loses
 overlap and song_offset (outputs: chain, seed, clip, frames, seconds, prompt, is_first_clip); Chain chain -> Asset Loader
 chain replaces the song_start and shot wires; Asset Loader overlap -> ChainContinue, ChainRemember, ChainJoin overlap. The

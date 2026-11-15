@@ -1,4 +1,4 @@
-"""How bright or muffled a video's sound is (made 2026-10-29 after Peter: "In the last i e the sound was a bit muffled").
+"""How bright or muffled a video's sound is (made 2026-10-29 after the sound of a render was judged a bit muffled).
 
 Per file, from the decoded audio (mono mix, 48 kHz): RMS level (dBFS), spectral centroid (Hz, lower = darker), the
 share of energy above 4 kHz and above 8 kHz (%), and the -20 dB roll-off frequency of the averaged spectrum (Hz,

@@ -18,7 +18,7 @@ Changes to the graph:
   as in the prompt's subject definitions). Delete `input/luna_chain_refs` after the run.
 - LunaAssetLoader -> Luna-H3-AssetLoader (renamed by the node merge, same inputs and outputs).
 
-- Optional `low_unet` (2026-10-29, Peter: "Yes and document it"): pass 1 runs on that unet with the same chain
+- Optional `low_unet` (2026-10-29): pass 1 runs on that unet with the same chain
   (nodes 510-514), pass 2 on the graph's own unet through `high_res_model`; the prefix gets `_<unet stem>_low`.
   The two-fine-tune test: `dojo2` with the Singularity V2 pruned unet for pass 1, v1.3 for pass 2.
 - Or `lora:<lora name>@<strength>` (2026-10-29): pass 1 = the graph's unet + that LoRA (LoraLoaderModelOnly 520, chain
@@ -136,7 +136,7 @@ def main(name, scratch, out, low_unet=None):
 
 
 def add_2k_stage(g, seed):
-    """`2k` (2026-10-29, Peter: "Full chain, 2mp to 2k so we have it as reference for the normal 2 k"): after the
+    """`2k` (2026-10-29: full chain, 2 MP to 2K, as a reference for the normal 2K): after the
     scene's finished latent (VRGDG save node 105), Kijai's 2K refine stage as in his two-stage workflow:
     MiniMaxH3LatentUpscaleWithModel to 2560x1440, the scene's unet + DMAD + Open-H3-Regenerate-2K refiner rank 16 +
     attention backend + chunked feed-forward + sol-attn, er_sde, sigmas 0.7, 0.494118, 0. The reference conditioning

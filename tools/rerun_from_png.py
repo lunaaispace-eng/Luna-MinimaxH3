@@ -1,6 +1,6 @@
 """Queue a finished run again from the graph saved in its PNG (VHS Video Combine's metadata), with a few inputs changed.
 
-Every other node and value stays as it ran. For one-variable tests (Peter, 2026-10-31: "not we change one variable").
+Every other node and value stays as it ran. For one-variable tests (2026-10-31: change one variable).
 
 Usage:
   python rerun_from_png.py <run.png> [--set NODE.INPUT=VALUE ...] [--set-file NODE.INPUT=PATH ...] [--dry-run]

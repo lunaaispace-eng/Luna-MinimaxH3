@@ -295,7 +295,7 @@ class CanvasRegisteredTests(unittest.TestCase):
 
 
 class LoaderChainTests(unittest.TestCase):
-    """2026-11-03, Peter: the song start, the segment and the overlap are set on the Asset Loader's card."""
+    """2026-11-03: the song start, the segment and the overlap are set on the Asset Loader's card."""
 
     CARD = {"file": "song.wav", "start": 0.0, "duration": 5.0, "fill": "silence", "position": "shot",
             "song_start": 87.44, "shot": 2, "overlap": 22}

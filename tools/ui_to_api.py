@@ -1,7 +1,7 @@
 """Turn a ComfyUI UI workflow (with `widgets_values_named`) into an API graph, with file names mapped to this PC.
 
-Made 2026-10-29 to run Kijai's two-stage Open-H3-Regenerate workflow unchanged on Peter's PC (Peter: "pull kijai
-node, make a test, analise, see if it works, then we decide the next step"). Copy of that workflow:
+Made 2026-10-29 to run Kijai's two-stage Open-H3-Regenerate workflow unchanged on this PC (2026-10-29: pull the Kijai
+node, make a test, analyse, see if it works, then decide the next step). Copy of that workflow:
 `D:\\Claude\\Luna-Research\\h3\\2026-10-29-kijai2stage_compare.json`.
 
 Usage: python ui_to_api.py <ui.json> <object_info.json> <out_api.json> [old=new ...]

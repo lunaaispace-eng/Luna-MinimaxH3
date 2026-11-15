@@ -5,8 +5,8 @@ normal generation. Every later clip copies the last `overlap` frames of the clip
 (noise mask 0), so the picture carries on where that clip ended. Join cuts the copied frames off again and gathers the
 sound, and Luna-SaveVideo on the same meta_batch writes one video, closed on the last clip with the whole soundtrack.
 
-The song settings live on Luna-H3-AssetLoader's sound card (2026-11-03, Peter: "it needs to be the other way around, set it
-in asset loader"): Luna-H3-Chain -> the loader's `chain` input gives only the clip number; the card's Start, Shot and
+The song settings live on Luna-H3-AssetLoader's sound card (2026-11-03: the settings are set
+in the asset loader, not in the chain): Luna-H3-Chain -> the loader's `chain` input gives only the clip number; the card's Start, Shot and
 overlap stay the user's. The loader's `overlap` output feeds ChainContinue, ChainRemember and ChainJoin.
 
 Overlap: 22, 39, 90, 141 or 192 frames, all 5 + 17k, so the copied run is 2 + 5k whole video latents starting on a

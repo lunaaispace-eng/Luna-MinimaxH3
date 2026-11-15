@@ -114,7 +114,7 @@ function fileName(value) {
     return String(value ?? "").split(/[\\/]/).pop();
 }
 
-// By exact key first, then by file name (Peter, 2026-11-10: "Yes, by file name").
+// By exact key first, then by file name (2026-11-10).
 function recipeFor(lora, recipes) {
     if (!lora || lora === "none" || !recipes) return null;
     const exact = recipes[lora] ?? recipes[String(lora).replace(/\\/g, "/")];

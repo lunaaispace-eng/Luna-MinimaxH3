@@ -184,7 +184,7 @@ class TemporalPadTests(unittest.TestCase):
 
 
 class PrecisionTests(unittest.TestCase):
-    """The upscaler runs in its checkpoint's own precision on a GPU (Peter, 2026-11-10)."""
+    """The upscaler runs in its checkpoint's own precision on a GPU (2026-11-10)."""
 
     def test_file_dtype_is_kept_through_the_load(self):
         for dtype in (torch.float16, torch.bfloat16, torch.float32):

@@ -11,7 +11,7 @@ import { registerLunaTheme } from "./luna_theme.mjs";
 import { registerLunaHelp } from "./luna_help.mjs";
 import { registerLunaCollapse } from "./luna_collapse.mjs";
 
-// Title-bar tinting is off for now — Peti prefers ComfyUI's default red header,
+// Title-bar tinting is off for now — ComfyUI's default red header is preferred,
 // with the widget's own palette inside. The role map stays here so turning it
 // back on is uncommenting one call; the colours are also editable in
 // Settings > Luna > Node colours.

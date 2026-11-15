@@ -3,7 +3,7 @@
     "name": "Natural skin · 2 MP",
     "label": "TESTED",
     "note": "Tested once: one seed, 5 s, 1920x1088, base minimax_h3_ref2va_int8_convrot. Truer face and shadows; a little tanned.",
-    "source": "Peter 2026-11-10, \"Yes, this is todays conclusion\" (SPEC Decisions log); M1_dmad8_dmad4_newsheet_orig_int8_5s, 133.7 s",
+    "source": "Decided 2026-11-10 as the conclusion of that day (SPEC Decisions log); M1_dmad8_dmad4_newsheet_orig_int8_5s, 133.7 s",
     "low": {
       "lora": "minimax_h3_DMAD_8step_full_lora_avg_rank_58_bf16.safetensors",
       "strength": 1.0,
@@ -31,7 +31,7 @@
     "name": "Smooth · 2 MP",
     "label": "TESTED",
     "note": "Smoother motion and more fine detail, but washed against Natural skin (17 % less colour, brighter highlights).",
-    "source": "Peter 2026-11-10, \"the pika is washed\"; M1_pika_newsheet_orig_int8_5s (1.0, lcm, linear_quadratic 12/3, 8 / 5, step split, 0.7), 149.9 s",
+    "source": "Judged 2026-11-10: the Pika result is washed out; M1_pika_newsheet_orig_int8_5s (1.0, lcm, linear_quadratic 12/3, 8 / 5, step split, 0.7), 149.9 s",
     "low": {
       "lora": "pika_h3_flex_ref2va_v1_avg_rank_55_bf16.safetensors",
       "strength": 1.0,
@@ -59,7 +59,7 @@
     "name": "Fast · lightx 12 / 9",
     "label": "TESTED",
     "note": "Plain node settings, no Pika and no refiner. One take; ref2v rank 20 instead of fl2v for references.",
-    "source": "Recipe N2, Luna-Research h3/2026-10-31-h3-new-tools/recipes.md l.80-83; Peter: \"T6 is like she held 1cm closer the mic, resti is identical\"",
+    "source": "Recipe N2, Luna-Research h3/2026-10-31-h3-new-tools/recipes.md l.80-83; T6 sounds about 1 cm closer to the mic, the rest identical",
     "low": {
       "lora": "minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors",
       "strength": 0.6,

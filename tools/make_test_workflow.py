@@ -1,10 +1,10 @@
-"""Build the first Luna-H3-Sampler GPU test workflow from Peter's Snow workflow.
+"""Build the first Luna-H3-Sampler GPU test workflow from the user's Snow workflow.
 
 Snow's sampler chain (MiniMaxH3SigmaShift, Power Lora Loader, BasicScheduler, BasicGuider, RandomNoise,
 SamplerCustomAdvanced) is replaced by one Luna-H3-Sampler node with Snow's own values: DMAD 4-step LoRA 0.8 on both
 arms, shift 12 / 3, er_sde wrapped by Detail Daemon on both passes, simple, 12 steps = 8 low + 4 high, CFG 1, seed 86.
 Everything else stays as in Snow; node ids renamed by the 2026-10-28 merge are updated (Luna-MinimaxH3).
-Node titles are left as they are (Peter: original node names).
+Node titles are left as they are (original node names are kept).
 
 Usage: python make_test_workflow.py <Snow.json> <out.json>
 """

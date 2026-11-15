@@ -37,7 +37,7 @@ RECIPE_FIELDS = (
 PAIR_ARM_FIELDS = ("lora", "strength", "sampler", "scheduler", "shift", "audio_shift", "cfg")
 USER_FILE = "luna_sampler_recipes.json"
 SIGMA_TOLERANCE = 1e-3
-TARGET_MP = 1.0  # pass 1 at about 1 MP (Peter, 2026-11-10, SPEC Decisions log)
+TARGET_MP = 1.0  # pass 1 at about 1 MP (2026-11-10, SPEC Decisions log)
 # Compared in this order. The first five numbers and the sampler/scheduler/cfg are the run.
 COMPARE_FIELDS = (
     "strength",
@@ -162,7 +162,7 @@ def file_name(path) -> str:
 
 
 def recipe_for(lora, recipes: dict):
-    """The per-LoRA recipe for `lora`, by exact key first, then by file name (Peter, 2026-11-10: "Yes, by file name")."""
+    """The per-LoRA recipe for `lora`, by exact key first, then by file name (2026-11-10)."""
     if not lora or lora == "none":
         return None
     for key in (lora, str(lora).replace("\\", "/")):

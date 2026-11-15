@@ -44,8 +44,8 @@ latent is the full-grid result. Connect it to a save node, or to the next scene 
 """
 
 
-# The hand-over by noise level (Peter, 2026-11-10, SPEC › Decisions log). Default 0, the step split: a node does what its
-# steps say; the recipe menu (⚙) sets the hand-over a LoRA pair needs (PROPOSED by Claude 2026-11-10, Peter: "you know better").
+# The hand-over by noise level (2026-11-10, SPEC › Decisions log). Default 0, the step split: a node does what its
+# steps say; the recipe menu (⚙) sets the hand-over a LoRA pair needs (PROPOSED by Claude 2026-11-10; the user left the choice to it).
 HANDOVER_DEFAULT = 0.0
 
 

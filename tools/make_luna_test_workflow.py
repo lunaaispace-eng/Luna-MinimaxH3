@@ -1,4 +1,4 @@
-"""Build the Luna-H3-Sampler test workflow from Peter's repaired "H3 SelfLift audio switch - Luna" workflow.
+"""Build the Luna-H3-Sampler test workflow from the user's repaired "H3 SelfLift audio switch - Luna" workflow.
 
 The original SelfLift chain (LoraLoaderModelOnly 56, MiniMaxH3SigmaShift 151, BasicScheduler 51,
 SelfLiftAvatarH3Sampler 149) is replaced by one Luna-H3-Sampler node with the Luna workflow's own values: fl2v turbo

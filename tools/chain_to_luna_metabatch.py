@@ -1,4 +1,4 @@
-"""Copy a chain workflow with Luna-MetaBatch and Luna-SaveVideo in place of VHS (Peter 2026-11-09, "Port it too").
+"""Copy a chain workflow with Luna-MetaBatch and Luna-SaveVideo in place of VHS (2026-11-09).
 
     E:\\ComfyUI-Easy-Install\\python_embeded\\python.exe -I tools\\chain_to_luna_metabatch.py SRC.json DST.json
 

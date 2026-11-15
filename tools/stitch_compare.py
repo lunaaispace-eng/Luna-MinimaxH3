@@ -1,10 +1,10 @@
 """Stitch videos one after another, each with its caption burned in at the top, sound kept.
 
-Made 2026-10-29 for Peter: "Can you make a stich, original kijai 2mp, time ram vram, ours with 2mp to 2 k and the
-last 1.5 to 2k, mention our sampler".
+Made 2026-10-29 to compare the original Kijai 2 MP run (time, RAM, VRAM) with ours at 2 MP to 2K and the
+last 1.5 to 2K, naming our sampler.
 
 Usage: python stitch_compare.py [--crf 18] [--preset medium] [--audio 192k] <out.mp4> <video1> <caption1> [...]
-Best quality for sharing (Peter, 2026-10-29: "make best quality"): --crf 14 --preset slow --audio 256k.
+Best quality for sharing (2026-10-29): --crf 14 --preset slow --audio 256k.
 A caption may hold several lines separated by "|". All videos must have the same size and an audio stream.
 Needs ffmpeg on PATH; uses Arial from C:/Windows/Fonts.
 """
