@@ -1,20 +1,23 @@
 # Luna-MinimaxH3
 
-The nodes for **MiniMax H3** in ComfyUI, seventeen in one pack: the canvas and AV-latent nodes H3 needs and does not
-ship, one loader for every H3 reference (and a lighter loader for pictures and a song), a shot list that plans scenes
-over one song, a scene loop that renders a whole music video in one queue with guide keyframes, a
-two-resolution sampler (low-resolution pass, lift, full-resolution pass) in one node, and a clip chain where every clip
-continues the one before over 22 to 192 locked frames.
+The nodes for **MiniMax H3** in ComfyUI, seventeen in one pack:
+- the canvas and AV-latent nodes H3 needs and does not ship;
+- one loader for every H3 reference (and a lighter loader for pictures and a song);
+- a shot list that plans scenes over one song;
+- a scene loop that renders a whole music video in one queue with guide keyframes;
+- a two-resolution sampler (low-resolution pass, lift, full-resolution pass) in one node;
+- a clip chain where every clip continues the one before over 22 to 192 locked frames.
 
-Every node's id is its display name, and every node sits in the category `Luna-MinimaxH3`.
-Each node has an (i) help button and a chevron that folds the settings away.
+Every node:
+- has its display name as its id;
+- sits in the category `Luna-MinimaxH3`;
+- has an (i) help button and a chevron that folds the settings away.
 
 ## Install
 
-Clone into `ComfyUI/custom_nodes/` (`git clone https://github.com/lunaaispace-eng/Luna-MinimaxH3`), then restart ComfyUI.
-
-Dependencies are in `requirements.txt` (Pillow, numpy; PyAV, OpenCV and einops come with ComfyUI). The loop's scene
-builder also uses the Beta 2.0 workflow nodes (comfyui-vrgamedevgirl); the other nodes need nothing else.
+- Clone into `ComfyUI/custom_nodes/` (`git clone https://github.com/lunaaispace-eng/Luna-MinimaxH3`), then restart ComfyUI.
+- Dependencies are in `requirements.txt`: Pillow, numpy. PyAV, OpenCV and einops come with ComfyUI.
+- The loop's scene builder also uses the Beta 2.0 workflow nodes (comfyui-vrgamedevgirl); the other nodes need nothing else.
 
 ## Node tree
 
@@ -39,31 +42,33 @@ builder also uses the Beta 2.0 workflow nodes (comfyui-vrgamedevgirl); the other
 
 ## Replaces
 
-Luna-MinimaxH3 replaces ComfyUI-LunaMiniMaxH3 and the H3 nodes of ComfyUI-SaveSimple (Luna Asset Loader,
-Luna H3 Reference Loader, Luna H3 Refs Out, Luna Shot List). Node ids changed with the rename, so workflows saved
-with the old nodes need those nodes swapped for the new ones. Remove the old folders from `custom_nodes` when you
-install this pack.
-
-It also replaces the separate Luna-H3-Sampler pack. That node
-keeps its id `Luna-H3-Sampler`, so saved workflows load unchanged. Remove the `Luna-H3-Sampler` folder from
-`custom_nodes`: two packs with the same node id collide.
+- Luna-MinimaxH3 replaces ComfyUI-LunaMiniMaxH3 and the H3 nodes of ComfyUI-SaveSimple (Luna Asset Loader, Luna H3 Reference
+  Loader, Luna H3 Refs Out, Luna Shot List).
+- Node ids changed with the rename: in workflows saved with the old nodes, swap those nodes for the new ones.
+- Remove the old folders from `custom_nodes` when you install this pack.
+- It also replaces the separate Luna-H3-Sampler pack. That node keeps its id `Luna-H3-Sampler`, so saved workflows load
+  unchanged.
+- Remove the `Luna-H3-Sampler` folder from `custom_nodes`: two packs with the same node id collide.
 
 ## Luna-H3-Sampler
 
-One node for MiniMax H3 audio+video: a low-resolution pass, a lift of the video to full size, and a full-resolution
-pass. Each pass has its own LoRA, shift, sampler and CFG. The audio runs as one trajectory through both passes.
-Protected regions (a video prefix with mask 0, a locked song) come out exactly as they went in, so scenes can be
-chained. Own code, written from the SelfLift paper (arXiv:2609.02036). The learned latent upscaler
-`minimax_h3_latent_upscaler_3d_fp16.safetensors` is optional (`upscaler_model: none` lifts with nearest).
+- One node for MiniMax H3 audio+video: a low-resolution pass, a lift of the video to full size, and a full-resolution pass.
+- Each pass has its own LoRA, shift, sampler and CFG.
+- The audio runs as one trajectory through both passes.
+- Protected regions (a video prefix with mask 0, a locked song) come out exactly as they went in, so scenes can be chained.
+- Own code, written from the SelfLift paper (arXiv:2609.02036).
+- The learned latent upscaler `minimax_h3_latent_upscaler_3d_fp16.safetensors` is optional (`upscaler_model: none` lifts with
+  nearest).
 
 ### How it works
 
-One schedule of `total_steps`. Pass 1 runs the first `transition` steps on a grid of `lowres_scale` (0.5 = half
-size); pass 2 runs the rest at full size. Each pass clones the model, adds its own LoRA and video and audio sigma
-shift. Between the passes the video is lifted to full size (learned upscaler, optionally blended with the pixel route
-by `rho`, `w_min`, `w_max`) and re-noised; the audio is handed over, not re-noised. Mask-0 regions of `latent_image`
-are restored exactly after each pass. Measured on DOJO2 (12 steps, transition 9): pass 1 sets motion, face and skin;
-pass 2 refines detail.
+- One schedule of `total_steps`.
+- Pass 1 runs the first `transition` steps on a grid of `lowres_scale` (0.5 = half size); pass 2 runs the rest at full size.
+- Each pass clones the model, adds its own LoRA and video and audio sigma shift.
+- Between the passes the video is lifted to full size (learned upscaler, optionally blended with the pixel route by `rho`,
+  `w_min`, `w_max`) and re-noised; the audio is handed over, not re-noised.
+- Mask-0 regions of `latent_image` are restored exactly after each pass.
+- Measured on DOJO2 (12 steps, transition 9): pass 1 sets motion, face and skin; pass 2 refines detail.
 
 ### Main inputs and outputs
 
@@ -107,12 +112,14 @@ pass 2 refines detail.
 | `0.7, 0.494118, 0.0` | refiner pass (Kijai, Trent) |
 | `0.909375, 0.857143, 0.666667, 0.0` | refiner pass (NVlabs) |
 
-**Song recipe** (tested on one scene, 1920x1088, 8.7 s, about 200 s on an RTX 4090): pass 1 `pika_h3_flex_ref2va_v1_avg_rank_55`
-at 1.0, pass 2 `pika_h3_flex_fl2va_v1` at 1.0, `lcm` and `linear_quadratic` in both, `total_steps` 8, `transition` 5, `lowres_scale`
-0.5, Sol-Attn tau 1.0. For generated sound, `lowres_scale` 0.7 at 1920x1088.
+**Song recipe** (tested on one scene, 1920x1088, 8.7 s, about 200 s on an RTX 4090)
+- Pass 1 `pika_h3_flex_ref2va_v1_avg_rank_55` at 1.0, pass 2 `pika_h3_flex_fl2va_v1` at 1.0.
+- `lcm` and `linear_quadratic` in both, `total_steps` 8, `transition` 5, `lowres_scale` 0.5, Sol-Attn tau 1.0.
+- For generated sound, `lowres_scale` 0.7 at 1920x1088.
 
-`luna_recipes.json` holds tested values per LoRA; picking a LoRA fills that pass's strength, steps and shifts. A LoRA is
-matched by its file name, in whatever folder ComfyUI finds it.
+**Recipes per LoRA**
+- `luna_recipes.json` holds tested values per LoRA; picking a LoRA fills that pass's strength, steps and shifts.
+- A LoRA is matched by its file name, in whatever folder ComfyUI finds it.
 
 **Recipe menu (⚙ on the title bar)**
 - **Recipes**: the tested pairs (`luna_pair_recipes.json`) and your own. Pick one to see every value it sets; **Validate**
@@ -127,33 +134,44 @@ matched by its file name, in whatever folder ComfyUI finds it.
   Saved recipes live in ComfyUI's `user\default\luna_sampler_recipes.json`, so a pack update never touches them.
 - The readout names the recipe while the widgets still match it.
 
-`high_res_model` (optional): not connected, pass 2 uses `model`. Connected, pass 2 clones it and adds its own LoRA and
-shifts; pass 1 still uses `model`. Both must be MiniMax H3. Use it for a LoRA that only one pass should get. Tested
-2026-10-29 (DOJO2, 2 MP): v1.3 unet plus Kijai's Singularity V2 LoRA on `model` and plain v1.3 on `high_res_model`
-gave about 70 % of V2's extra motion at no extra time.
+**`high_res_model`** (optional)
+- Not connected: pass 2 uses `model`.
+- Connected: pass 2 clones it and adds its own LoRA and shifts; pass 1 still uses `model`.
+- Both must be MiniMax H3. Use it for a LoRA that only one pass should get.
+- Tested 2026-10-29 (DOJO2, 2 MP): v1.3 unet plus Kijai's Singularity V2 LoRA on `model` and plain v1.3 on `high_res_model`
+  gave about 70 % of V2's extra motion at no extra time.
 
-`positive_low`, `negative_low` (optional): conditioning for pass 1 only. Not connected, pass 1 uses `positive` and
-`negative`, with their keyframe latents shrunk to the low grid. Connected, build it with a second `MiniMaxH3ImageToVideo`
-at pass 1's size, as a native two-stage graph does; `negative_low` is used only when `cfg_low` is above 1.
+**`positive_low`, `negative_low`** (optional)
+- Conditioning for pass 1 only.
+- Not connected: pass 1 uses `positive` and `negative`, with their keyframe latents shrunk to the low grid.
+- Connected: build it with a second `MiniMaxH3ImageToVideo` at pass 1's size, as a native two-stage graph does.
+- `negative_low` is used only when `cfg_low` is above 1.
 
-`sigmas_low` ending at 0.01 or below means pass 1 has finished: pass 2 then draws fresh noise for the audio too, from
-the same seed as the video, as a native second pass does. This works with any sampler in pass 1.
+**Finished pass 1**
+- `sigmas_low` ending at 0.01 or below means pass 1 has finished.
+- Pass 2 then draws fresh noise for the audio too, from the same seed as the video, as a native second pass does.
+- This works with any sampler in pass 1.
 
 ### Example workflows and tools
 
-`example_workflows/` holds five small workflows (reference to video, image to video, LoRA on pass 1 only, 1 MP and
-2 MP to 2K), built from ComfyUI core nodes and KJNodes. ComfyUI lists them under Templates › Custom Nodes. The 2K
-ones need ComfyUI 0.43 nightly (2026-10-28) or newer. Tested 2026-10-29 on an RTX 4090: 166 s from 1 MP, 259 s from
-2 MP. **Limit (24 GB card):** the 2K stage is proven only for 5 s clips (124 frames); at 14.4 s it did not finish its
-first step in 12.5 minutes. Details and credits: `example_workflows/README.md`. `tools/` holds the scripts that build
-and test these workflows; ComfyUI does not load them.
+- `example_workflows/` holds five small workflows (reference to video, image to video, LoRA on pass 1 only, 1 MP and 2 MP to
+  2K), built from ComfyUI core nodes and KJNodes.
+- ComfyUI lists them under Templates › Custom Nodes.
+- The 2K ones need ComfyUI 0.43 nightly (2026-10-28) or newer.
+- Tested 2026-10-29 on an RTX 4090: 166 s from 1 MP, 259 s from 2 MP.
+- **Limit (24 GB card):** the 2K stage is proven only for 5 s clips (124 frames); at 14.4 s it did not finish its first step in
+  12.5 minutes.
+- Details and credits: `example_workflows/README.md`.
+- `tools/` holds the scripts that build and test these workflows; ComfyUI does not load them.
 
 ## Tests
 
-With ComfyUI's Python: `python -m unittest discover -s tests` and `node --test tests/test_luna_sampler_ui.mjs`. The Sampler tests run on a tiny CPU H3 harness; no GPU needed. The registration test needs
-a ComfyUI folder (`COMFYUI_DIR`).
+- With ComfyUI's Python: `python -m unittest discover -s tests` and `node --test tests/test_luna_sampler_ui.mjs`.
+- The Sampler tests run on a tiny CPU H3 harness; no GPU needed.
+- The registration test needs a ComfyUI folder (`COMFYUI_DIR`).
 
 ## Licence
 
-GPL-3.0, see [LICENSE](LICENSE). Derived code and its licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-The three `luna_*.mjs` frontend kit files are Apache-2.0.
+- GPL-3.0, see [LICENSE](LICENSE).
+- Derived code and its licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- The three `luna_*.mjs` frontend kit files are Apache-2.0.

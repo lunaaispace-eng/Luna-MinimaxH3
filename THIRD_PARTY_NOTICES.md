@@ -1,7 +1,7 @@
 # Third-party notices
 
-Luna-MinimaxH3 is licensed under GPL-3.0 (see `LICENSE`). This file lists code adapted from other projects,
-with its source, licence and where it lives here.
+- Luna-MinimaxH3 is licensed under GPL-3.0 (see `LICENSE`).
+- This file lists code adapted from other projects, with its source, licence and where it lives here.
 
 | Source | Licence | Adapted into | What |
 |---|---|---|---|
@@ -13,10 +13,10 @@ with its source, licence and where it lives here.
 
 ## Licence of the shared frontend kit
 
-`web/luna_theme.mjs`, `web/luna_help.mjs` and `web/luna_collapse.mjs` (and `web/luna_pack_theme.js`,
-which uses them) are Apache-2.0, Copyright 2026 Luna AI Space. They stay Apache-2.0 inside this
-GPL-3.0 pack; Apache-2.0 code may be combined into a GPL-3.0 work. Copy them into another pack under
-Apache-2.0.
+- `web/luna_theme.mjs`, `web/luna_help.mjs` and `web/luna_collapse.mjs` (and `web/luna_pack_theme.js`, which uses them) are
+  Apache-2.0, Copyright 2026 Luna AI Space.
+- They stay Apache-2.0 inside this GPL-3.0 pack; Apache-2.0 code may be combined into a GPL-3.0 work.
+- Copy them into another pack under Apache-2.0.
 
 ## What each licence asks
 
@@ -28,17 +28,19 @@ Apache-2.0.
 
 ## MiniMax H3 latent upscaler (LBH-123-AI, MIT)
 
-The network classes (`AttnBlock3D`, `ResBlockEmb3D`, `TemporalConv`, `LatentResizer3D`),
-normalization helpers and H3 latent statistics in `luna_upscaler.py` are adapted from
-[LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler),
-[`nodes/minimax_h3_latent_upscaler_3d.py`](https://raw.githubusercontent.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler/main/nodes/minimax_h3_latent_upscaler_3d.py),
-retrieved 2026-10-28. [Upstream licence](https://raw.githubusercontent.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler/main/LICENSE).
-
-Adaptations: preserve temporal length in scale-only calls; ComfyUI folder discovery,
-safe CPU checkpoint loading and architecture inference; cache on CPU; exact target size,
-original dtype/device restoration, and unconditional offload/cleanup after inference.
-The 2D source is not used. Model weights are not bundled or relicensed by this notice.
-The upstream LICENSE has a literal `/n/n` between paragraphs; it is rendered below as a blank line.
+- Source: the network classes (`AttnBlock3D`, `ResBlockEmb3D`, `TemporalConv`, `LatentResizer3D`), normalization helpers
+  and H3 latent statistics in `luna_upscaler.py` are adapted from
+  [LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler),
+  [`nodes/minimax_h3_latent_upscaler_3d.py`](https://raw.githubusercontent.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler/main/nodes/minimax_h3_latent_upscaler_3d.py),
+  retrieved 2026-10-28. [Upstream licence](https://raw.githubusercontent.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler/main/LICENSE).
+- Adaptations:
+  - preserve temporal length in scale-only calls;
+  - ComfyUI folder discovery, safe CPU checkpoint loading and architecture inference;
+  - cache on CPU;
+  - exact target size, original dtype/device restoration, and unconditional offload/cleanup after inference.
+- The 2D source is not used.
+- Model weights are not bundled or relicensed by this notice.
+- The upstream LICENSE has a literal `/n/n` between paragraphs; it is rendered below as a blank line.
 
 MIT License
 
@@ -64,11 +66,15 @@ SOFTWARE.
 
 ## Scene chain (TrentNodes, MIT)
 
-`h3_chain.py` adapts the clip loop of TrentNodes' Video Chain, Continue From Last Clip, Remember Clip Ending and
-Join Clips (`nodes/h3_video_chain.py`), its H3 Chain Step (`nodes/h3_chain_batch.py`) and H3 Keystone Graft
-(`nodes/h3_keystone_graft.py`), at TrentNodes `3d80a9d`. Adaptations: overlap 22 with the song locked; a mask
-already on the latent is kept; the pass 1 tail for Luna-H3-Sampler's `low_res_head`; one Remember for both sampler
-outputs; `shot`, `overlap`, `frames` and `seconds` outputs.
+- Source: `h3_chain.py` adapts the clip loop of TrentNodes' Video Chain, Continue From Last Clip, Remember Clip Ending and
+  Join Clips (`nodes/h3_video_chain.py`), its H3 Chain Step (`nodes/h3_chain_batch.py`) and H3 Keystone Graft
+  (`nodes/h3_keystone_graft.py`), at TrentNodes `3d80a9d`.
+- Adaptations:
+  - overlap 22 with the song locked;
+  - a mask already on the latent is kept;
+  - the pass 1 tail for Luna-H3-Sampler's `low_res_head`;
+  - one Remember for both sampler outputs;
+  - `shot`, `overlap`, `frames` and `seconds` outputs.
 
 MIT License
 

@@ -1,11 +1,11 @@
 # Example workflows
 
-Five small workflows that show how Luna-H3-Sampler fits into a normal MiniMax H3 graph. Apart from this node they
-use only ComfyUI core nodes and one KJNodes node (`MiniMaxChunkFeedForward`, memory saving). The model side is the
-same as in the official Comfy MiniMax H3 templates; only the sampler section is replaced by Luna-H3-Sampler.
-
-ComfyUI lists them under Templates › Custom Nodes › Luna-MinimaxH3. Pick your own files in the loaders, the image in
-`LoadImage`, and write your own prompt.
+- Five small workflows that show how Luna-H3-Sampler fits into a normal MiniMax H3 graph.
+- Apart from this node they use only ComfyUI core nodes and one KJNodes node (`MiniMaxChunkFeedForward`, memory saving).
+- The model side is the same as in the official Comfy MiniMax H3 templates; only the sampler section is replaced by
+  Luna-H3-Sampler.
+- ComfyUI lists them under Templates › Custom Nodes › Luna-MinimaxH3.
+- Pick your own files in the loaders, the image in `LoadImage`, and write your own prompt.
 
 | Workflow | What it shows |
 |---|---|
@@ -17,8 +17,8 @@ ComfyUI lists them under Templates › Custom Nodes › Luna-MinimaxH3. Pick you
 
 ## 2K workflows
 
-Stage 1 is Luna-H3-Sampler with the 2 MP recipe below, at 1344x768 or 1920x1088. Stage 2 is the 2K refine stage
-from Kijai's two-stage Open-H3-Regenerate workflow, unchanged:
+- Stage 1 is Luna-H3-Sampler with the 2 MP recipe below, at 1344x768 or 1920x1088.
+- Stage 2 is the 2K refine stage from Kijai's two-stage Open-H3-Regenerate workflow, unchanged:
 
 ```
 Luna-H3-Sampler latent -> MiniMaxH3LatentUpscaleWithModel (2560x1440, learned upscaler)
@@ -43,7 +43,7 @@ Tested on one RTX 4090 (24 GB) with 64 GB RAM, 124 frames, same prompt and seed 
 | Luna-H3-Sampler 1664x928 (1.5 MP) | 202 s | 15.4 GB | below 2 MP |
 | Luna-H3-Sampler 1920x1088 (2 MP) | 259 s | 15.8 GB | best quality |
 
-Peak VRAM was 22 to 24 GB in every run (dynamic VRAM fills the card).
+- Peak VRAM was 22 to 24 GB in every run (dynamic VRAM fills the card).
 
 ### Limit: clip length at 2K (24 GB card)
 
@@ -55,10 +55,12 @@ On the RTX 4090 the 2K stage works for 5 s clips only so far:
 | 124 frames (5.2 s), vertical 1440x2560, 3 reference images | 2.6 min | 85 s |
 | 345 frames (14.4 s), 2560x1440, 3 reference images | 5.9 min (works) | did not finish its first step in 12.5 min; stopped |
 
-The first stage handles full scene length; the 2K stage does not on 24 GB. Most likely the 2K latent at that length no
-longer fits next to the model, so ComfyUI keeps swapping weights (inferred, not measured). Lengths between 5 and 14 s
-are untested. A windowed 2K pass (overlapping 5 s windows) is the planned way around it; until then, use the 2K
-workflows for clips of about 5 s, or a card with more memory.
+- The first stage handles full scene length; the 2K stage does not on 24 GB.
+- Most likely the 2K latent at that length no longer fits next to the model, so ComfyUI keeps swapping weights (inferred, not
+  measured).
+- Lengths between 5 and 14 s are untested.
+- A windowed 2K pass (overlapping 5 s windows) is the planned way around it.
+- Until then, use the 2K workflows for clips of about 5 s, or a card with more memory.
 
 ## Credits
 
@@ -73,7 +75,8 @@ workflows for clips of about 5 s, or a card with more memory.
   ([Comfyui_Minimax_h3_latent_Upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler)).
 - **LightX2V**: the turbo LoRAs. **MiniMax**: the H3 model.
 
-These workflows contain settings, not code, from those projects. Each model keeps its own licence.
+- These workflows contain settings, not code, from those projects.
+- Each model keeps its own licence.
 
 ## The graph
 
@@ -94,28 +97,23 @@ latent -> VAEDecode (video VAE) + VAEDecodeAudio (audio VAE) -> CreateVideo -> S
 
 ## Models
 
-From [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3):
-`diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors` (reference to video),
-`diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors` (image to video),
-`text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`, `vae/minimax_h3_video_vae_int8_convrot.safetensors`,
-`vae/minimax_h3_audio_vae_fp32.safetensors`.
-
-From [Kijai/MiniMax-H3_comfy](https://huggingface.co/Kijai/MiniMax-H3_comfy) (`loras/`): the turbo LoRAs
-`minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors` and
-`minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors`.
-
-From [Kijai/MiniMax-H3-experimental](https://huggingface.co/Kijai/MiniMax-H3-experimental) (`loras/`), only for the
-LoRA example: `minimax_h3_singularity_v2_lora_avg_rank_351_bf16.safetensors` (3.3 GB; Kijai's card says it keeps
-roughly 40-50 % of the Singularity V2 fine-tune).
-
-The latent upscaler `minimax_h3_latent_upscaler_3d_fp16.safetensors` is optional: set `upscaler_model` to `none` if
-you do not have it.
-
-Node packs: [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) for `MiniMaxChunkFeedForward`. Without it,
-connect `UNETLoader` straight to `model` (more VRAM at 2 MP).
-
-For the 2K workflows also: `minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors` and
-`minimax_h3_open_regenerate_2k_refiner_rank_16_bf16.safetensors` from Kijai/MiniMax-H3-experimental (`loras/`), and
-the latent upscaler (required there).
-
-The workflows are built by `tools/make_example_workflows.py`.
+- From [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3):
+  - `diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors` (reference to video);
+  - `diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors` (image to video);
+  - `text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`;
+  - `vae/minimax_h3_video_vae_int8_convrot.safetensors`;
+  - `vae/minimax_h3_audio_vae_fp32.safetensors`.
+- From [Kijai/MiniMax-H3_comfy](https://huggingface.co/Kijai/MiniMax-H3_comfy) (`loras/`), the turbo LoRAs:
+  - `minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors`;
+  - `minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors`.
+- From [Kijai/MiniMax-H3-experimental](https://huggingface.co/Kijai/MiniMax-H3-experimental) (`loras/`), only for the LoRA
+  example: `minimax_h3_singularity_v2_lora_avg_rank_351_bf16.safetensors` (3.3 GB; Kijai's card says it keeps roughly
+  40-50 % of the Singularity V2 fine-tune).
+- The latent upscaler `minimax_h3_latent_upscaler_3d_fp16.safetensors` is optional: set `upscaler_model` to `none` if you do
+  not have it.
+- Node packs: [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) for `MiniMaxChunkFeedForward`. Without it, connect
+  `UNETLoader` straight to `model` (more VRAM at 2 MP).
+- For the 2K workflows also: `minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors` and
+  `minimax_h3_open_regenerate_2k_refiner_rank_16_bf16.safetensors` from Kijai/MiniMax-H3-experimental (`loras/`), and the
+  latent upscaler (required there).
+- The workflows are built by `tools/make_example_workflows.py`.
