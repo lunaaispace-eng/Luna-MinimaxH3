@@ -1,8 +1,8 @@
 // Luna house theme — shared node colouring for the Luna ComfyUI packs.
 //
-// SOURCE OF TRUTH: ComfyUI-LunaRunner/web/style.css. This file is a copy so each
-// pack stays self-contained (they are separate repos and a pack must work alone).
-// If the palette changes there, change it here too.
+// SOURCE OF TRUTH: Luna-Media-Tools/web/luna_theme.mjs. The other Luna packs hold a
+// byte-identical copy, so each pack stays self-contained (they are separate repos and a
+// pack must work alone). Change it there, then copy the whole file to the other packs.
 //
 //   --accent  #e0a458  warm amber      --text  #e7e5df    --muted  #8b8e99
 //   --bg      #14151a  --panel #1c1e25 --border #2e313c   --radius 8px
