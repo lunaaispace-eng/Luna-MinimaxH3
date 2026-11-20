@@ -81,8 +81,9 @@ import folder_paths
 import node_helpers
 
 from .asset_images import apply_state, conform, to_rgb
-from .asset_timeline import (check_placements, h3_tags, normalize_sound_role, shot_frames,
+from .asset_timeline import (ROW, check_placements, h3_tags, naming_cards, normalize_sound_role, shot_frames,
                              target_fps, target_grid, thinning_error)
+from .luna_naming import make as make_naming, names_line
 from .media_io import (FPS, clip_bytes, clip_soundtrack, decode_clip, filmstrip_jpeg, grid_frames, strip_annotation,
                        load_audio, load_audio_window, probe_media, song_shot_count, song_shot_start)
 
@@ -276,8 +277,10 @@ class LunaAssetLoader:
     DESCRIPTION = (
         "Load up to 9 ordered reference images and a song through one node. Numbered "
         "outputs keep each image at its original size for the MiniMax H3 reference sockets; "
-        "the `images` batch feeds prompt writers. Card order is <Picture 1>, <Picture 2>, and "
-        "so on, and asset_brief states that mapping so nothing has to guess it.\n\n"
+        "the `images` batch feeds prompt writers. The reference cards, in card order, are <Picture 1>, "
+        "<Picture 2>, and so on (a keyframe card is not counted). In the prompt, point at a card by its @ name, "
+        "its card number: @image2, @video1, @audio2. Each card shows its @ name and the tag H3 receives, and "
+        "asset_brief states that mapping in its @ names line so nothing has to guess it.\n\n"
         "Upload a sound file and it becomes a sound card. Select it to see the whole song: "
         "drag the window to choose the part the shot uses, drag its edges or type Start and "
         "Duration. Wire `seconds` (for example from the canvas node) and the duration is "
@@ -311,15 +314,22 @@ class LunaAssetLoader:
         "its resize; with no pictures either, 0.",
         "The height to generate at. Same rule as width: the wired canvas height, else image 1's height "
         "AFTER its resize, else 0.",
-        "A one-line inventory — '<Picture 1> = 1920x1056 (20:11, landscape); ...' — "
-        "plus a warning when pictures 1 and 2 differ in aspect ratio, which FL2VA "
-        "silently fixes by stretching the first frame and cropping the last. "
-        "Feed it to a prompt writer so it knows which reference is which.",
+        "A one-line inventory — '<Picture 1> = 1920x1056 (20:11, landscape); ...' — with the tag H3 "
+        "receives for each reference; a warning when picture cards 1 and 2 differ in aspect ratio, which "
+        "FL2VA silently fixes by stretching the first frame and cropping the last; the @ names line "
+        "('@ names: @image1 = not sent; @image2 = <Picture 1>; ...': each card's @imageN, @videoN, @audioN "
+        "and the tag it becomes, 'not sent' when it sits on the shot); then what is on the shot and the song. "
+        "For Luna-LLMPrompt's or Luna-LLMPromptAPI's asset_brief, so the writer knows which reference is which "
+        "and what each @ name means. With Luna-H3-RefsOut in the graph, wire its asset_brief instead.",
         "The song window from sound card 1: exactly the duration you set, or exactly the "
         "seconds input when it is wired. Wire it to the save node so the finished video has "
         "the same sound, or to an audio-sync node to make the picture follow it.",
-        "Every picture as a MiniMax H3 reference (<Picture 1> … in card order), for "
-        "Luna-H3-RefsOut, which splits it into the sampler's ref_image sockets.",
+        "Every reference on one wire, in the order H3 numbers them (keyframes, guide clips and the locked "
+        "song are not in it): pictures, clips, their soundtracks, standalone sounds, the song window, the "
+        "brief, and `naming`, the @ names map (each card's @imageN, @videoN, @audioN to the tag H3 receives). "
+        "For Luna-H3-RefsOut's refs, which splits it into the ref_image, ref_video, ref_video_audio and "
+        "ref_audio sockets and rebuilds the @ names line for its switches; or Luna-LLMPrompt's or "
+        "Luna-LLMPromptAPI's refs.",
         "What sits on the shot timeline and where, in frames: keyframe pictures, guide clips and "
         "guide or locked sounds.",
         "The frames of clip card V1 (whatever its role), decoded as the card says. For Luna-LLMPrompt's "
@@ -343,7 +353,7 @@ class LunaAssetLoader:
             "required": {
                 "image_paths": ("STRING", {
                     "multiline": True, "default": "",
-                    "tooltip": "One image file name per line, from ComfyUI's input folder. Order is everything: line 1 is <Picture 1>, line 2 is <Picture 2>, and so on. In FL2VA the first two lines are the first and last frame.",
+                    "tooltip": "One image file name per line, from ComfyUI's input folder. Order is everything: line 1 is picture card 1 (@image1), line 2 card 2 (@image2), and so on; the reference cards among them are <Picture 1>, <Picture 2> … in that order (a keyframe card is not counted). In FL2VA the first two lines are the first and last frame.",
                 }),
                 "image_count": ("INT", {
                     "default": 2, "min": 1, "max": MAX_IMAGES,
@@ -440,7 +450,8 @@ class LunaAssetLoader:
             refs = {"images": [], "videos": [], "video_audios": [], "audios": [], "width": 0, "height": 0,
                     "brief": "Nothing loaded.", "song": None,
                     "items": {"images": [], "videos": [], "video_audios": [], "audios": [], "song": "",
-                              "extra": []}}
+                              "extra": []},
+                    "naming": make_naming(ROW)}
             timeline = {"version": 2, "fps": FPS, "frames": shot_len, "items": []}
             result = (None, canvas[0] if canvas else 0, canvas[1] if canvas else 0, "Nothing loaded.", None,
                       refs, timeline, None, out_frames, 0) + (None,) * MAX_IMAGES
@@ -463,9 +474,15 @@ class LunaAssetLoader:
         # --- roles, tags, placements --------------------------------------------
         pic = [media["pictures"][i] if i < len(media["pictures"]) else {"role": "ref", "at": 0}
                for i in range(len(paths))]
-        tags = h3_tags([p["role"] for p in pic],
-                       [{"role": c["role"], "sound": d["sound"] is not None} for c, d in zip(clips, decoded)],
-                       [c["role"] for c in cards])
+        pic_roles = [p["role"] for p in pic]
+        clip_cards = [{"role": c["role"], "sound": d["sound"] is not None} for c, d in zip(clips, decoded)]
+        tags = h3_tags(pic_roles, clip_cards, [c["role"] for c in cards])
+        # The @ names: one per card, mapped to the tag H3 receives. The three lists say exactly which cards go
+        # into refs["images"], ["videos"], ["video_audios"] and ["audios"] below (a reference sound that did not
+        # load is not sent), so Luna-H3-RefsOut can recount them after its switches (luna_naming.remake).
+        naming = make_naming(ROW, *naming_cards(
+            pic_roles, clip_cards,
+            [c["role"] if c["role"] != "ref" or extra_sounds.get(j) else "off" for j, c in enumerate(cards)]))
         placed = [(f"Picture card {i + 1}", p["at"], 1) for i, p in enumerate(pic) if p["role"] == "key"]
         placed += [(f"Clip V{k + 1} ({c['file']})", c["at"], int(d["batch"].shape[0]))
                    for k, (c, d) in enumerate(zip(clips, decoded)) if c["role"] == "guide"]
@@ -485,7 +502,9 @@ class LunaAssetLoader:
                 "audios": [extra_sounds[j][0] for j in ref_sounds if extra_sounds.get(j)],
                 "width": dims[0][0] if dims else 0, "height": dims[0][1] if dims else 0,
                 # The song window, so Luna-H3-RefsOut can hand it on (its `audio` output).
-                "song": audio}
+                "song": audio,
+                # The @ names (luna_naming.make, row minimax): which tag each card gets, or None when it is not sent.
+                "naming": naming}
         # One description per item WITHOUT its <Tag>, per category. Luna-H3-RefsOut rebuilds the
         # brief from these with fresh numbering when it switches a category off (a clip sound
         # off moves the standalone sounds down a number), so the tags cannot be baked in here.
@@ -545,6 +564,10 @@ class LunaAssetLoader:
         if refs["audios"] and not refs["images"] and not refs["videos"]:
             parts.append("WARNING: MiniMax H3 does not accept reference sounds without a reference "
                          "picture or clip.")
+        # Not kept in items: Luna-H3-RefsOut writes its own names line from refs["naming"] after its switches.
+        at_line = names_line(naming)
+        if at_line:
+            parts.append(at_line)
         on_shot = self._shot_lines(pic, clips, decoded, cards, song)
         if on_shot:
             on_line = f"On the shot ({shot_len} frames, {shot_len / FPS:.2f} s): " + "; ".join(on_shot) + "."

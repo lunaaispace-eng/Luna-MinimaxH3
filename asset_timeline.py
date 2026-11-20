@@ -16,7 +16,27 @@ and standalone reference sounds come after every clip.
 
 from __future__ import annotations
 
+# The shared naming rule (luna_naming.py). Imported both ways this module is loaded: inside the
+# pack (asset_loader's relative import) and on its own, with the pack root on sys.path (the tests).
+try:
+    from . import luna_naming
+except ImportError:
+    import luna_naming
+
 FPS = 24
+
+# The Asset Loader names its items in the minimax row for every ⚙ Target (h3, ltx, general).
+ROW = "minimax"
+
+
+def naming_cards(pic_roles: list, clips: list, sound_roles: list):
+    """The Asset Loader's card roles -> luna_naming's three card lists (pictures, clips, sounds).
+
+    Only "ref" is sent; anything else (a keyframe, a guide, a locked song) sits on the shot."""
+    pictures = ["ref" if role == "ref" else "key" for role in pic_roles]
+    vids = [{"sent": c.get("role") == "ref", "sound": bool(c.get("sound"))} for c in clips]
+    sounds = [role == "ref" for role in sound_roles]
+    return pictures, vids, sounds
 
 
 def h3_tags(pic_roles: list, clips: list, sound_roles: list) -> dict:
@@ -24,24 +44,13 @@ def h3_tags(pic_roles: list, clips: list, sound_roles: list) -> dict:
 
     pic_roles: "ref" | "key" per picture card. clips: {"role": "ref"|"guide",
     "sound": bool (a kept soundtrack exists)} per video card. sound_roles:
-    "ref" | "lock" | "guide" per sound card."""
-    pictures, videos, video_audio, sounds = {}, {}, {}, {}
-    for i, role in enumerate(pic_roles):
-        if role == "ref":
-            pictures[i] = f"<Picture {len(pictures) + 1}>"
-    audio_no = 0
-    for i, c in enumerate(clips):
-        if c.get("role") != "ref":
-            continue
-        if c.get("sound"):
-            audio_no += 1
-            video_audio[i] = f"<Audio {audio_no}>"
-        videos[i] = f"<Video {len(videos) + 1}>"
-    for i, role in enumerate(sound_roles):
-        if role == "ref":
-            audio_no += 1
-            sounds[i] = f"<Audio {audio_no}>"
-    return {"pictures": pictures, "videos": videos, "video_audio": video_audio, "sounds": sounds}
+    "ref" | "lock" | "guide" per sound card. Built on luna_naming.assign and .tag (row minimax)."""
+    a = luna_naming.assign(ROW, *naming_cards(pic_roles, clips, sound_roles))
+    tags = {kind: {card: luna_naming.tag(ROW, tag_kind, pos) for card, pos in a[kind].items()}
+            for kind, tag_kind in (("image", "image"), ("video", "video"), ("video_audio", "audio"),
+                                   ("audio", "audio"))}
+    return {"pictures": tags["image"], "videos": tags["video"], "video_audio": tags["video_audio"],
+            "sounds": tags["audio"]}
 
 
 def target_fps(target: str, source_fps: float) -> float:

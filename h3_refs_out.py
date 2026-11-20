@@ -26,6 +26,10 @@ move down to <Audio 1>. Wire this node's `asset_brief`, not the loader's, into t
 prompt writer. Refs without `items` (older data) fall back to the loader's own brief
 when every switch is on, else a brief built from the counts.
 
+The @ names. When `refs` carries `naming` (luna_naming.make), the brief gets the names line
+recounted for the switches (luna_naming.remake), written in the minimax row. Without `naming`
+the brief is exactly what it was before the names existed.
+
 Socket names are 0-based to match H3's (`ref_image_0`), while the prompt tags in
 `asset_brief` are 1-based (`<Picture 1>`), because that is H3's own
 inconsistency — its Autogrow sockets count from 0 and its tokenizer counts from
@@ -35,6 +39,11 @@ disagree with the graph.
 
 from __future__ import annotations
 
+from .luna_naming import from_refs, names_line, put_names_line, remake
+
+# Refs Out feeds MiniMax H3 and its inventory lines are MiniMax tags, so its @ names line is always written in
+# the minimax row, whatever row the loader named its items for (a Qwen-target Luna-ImageLoader included).
+ROW = "minimax"
 MAX_IMAGES = 9
 MAX_VIDEOS = 3
 MAX_AUDIOS = 3
@@ -57,7 +66,8 @@ class LunaH3RefsOut:
         "Sockets past what was loaded stay empty.\n\n"
         "Five switches (ref_image, ref_video, ref_video_audio, ref_audio, audio) turn a category off: its sockets "
         "then deliver nothing, which H3 skips, and `asset_brief` is rebuilt for what is left with "
-        "the numbering recounted. Wire this node's `asset_brief` to the prompt writer. `audio` is the "
+        "the numbering recounted, the @ names line included. Wire this node's `asset_brief` to the prompt "
+        "writer. `audio` is the "
         "song, for the save node and the prompt writer."
     )
     CATEGORY = "Luna-MinimaxH3"
@@ -99,7 +109,10 @@ class LunaH3RefsOut:
         )
         + (
             "The inventory string, rebuilt for the categories switched on, with H3's numbering "
-            "recounted. Feed it to the prompt writer from beside the H3 node.",
+            "recounted, and the @ names line rebuilt the same way ('@ names: @image1 = <Picture 1>; "
+            "@audio2 = <Audio 1>; ...', 'not sent' for a card that is off or on the shot), always in MiniMax "
+            "tags. For Luna-LLMPrompt's or Luna-LLMPromptAPI's asset_brief: the writer takes its @ names map "
+            "from this line, so it matches what the ref sockets deliver.",
             "The song window (the loader's `audio`), when the song switch is on; else empty. For "
             "Luna-SaveVideo's audio and Luna-LLMPrompt's audio.",
         )
@@ -110,7 +123,8 @@ class LunaH3RefsOut:
         return {
             "required": {
                 "refs": ("LUNA_H3_REFS", {
-                    "tooltip": "The `refs` output of Luna-H3-AssetLoader.",
+                    "tooltip": "The `refs` output of Luna-H3-AssetLoader (or Luna-ImageLoader). Its @ names map "
+                               "(`naming`) is recounted for the switches into asset_brief's @ names line.",
                 }),
                 "pictures": ("BOOLEAN", {
                     "default": True,
@@ -166,8 +180,10 @@ def build_brief(refs, pictures=True, clips=True, clip_sound=True, sounds=True, s
     every clip, so the numbers depend on which switches are on.
     """
     items = refs.get("items")
+    at_naming = _switched_naming(refs, pictures, clips, clip_sound, sounds)
     if not isinstance(items, dict):
-        return _fallback_brief(refs, pictures, clips, clip_sound, sounds, song)
+        brief = _fallback_brief(refs, pictures, clips, clip_sound, sounds, song)
+        return put_names_line(brief, at_naming, ROW) if at_naming else brief
     images = (items.get("images") or []) if pictures else []
     videos = (items.get("videos") or []) if clips else []
     v_audio = items.get("video_audios") or []
@@ -190,10 +206,25 @@ def build_brief(refs, pictures=True, clips=True, clip_sound=True, sounds=True, s
     if standalone and not images and not videos:
         parts.append("WARNING: MiniMax H3 does not accept reference sounds without a reference "
                      "picture or clip.")
+    at_line = names_line(at_naming, ROW) if at_naming else ""
+    if at_line:
+        parts.append(at_line)
     if song and items.get("song"):
         parts.append(items["song"])
     parts += [x for x in (items.get("extra") or []) if x]
     return " ".join(parts)
+
+
+def _switched_naming(refs, pictures, clips, clip_sound, sounds):
+    """The loader's @ names after this node's switches (luna_naming.remake), or None when `refs` carries no
+    naming (older loaders, Luna-H3-ReferenceLoader). A naming without its cards cannot be recounted: it is kept
+    as it is only when every switch is on, else there is no names line."""
+    naming = from_refs(refs)
+    if naming is None:
+        return None
+    if isinstance(naming.get("cards"), dict):
+        return remake(naming, pictures, clips, clip_sound, sounds)
+    return naming if pictures and clips and clip_sound and sounds else None
 
 
 def _fallback_brief(refs, pictures, clips, clip_sound, sounds, song) -> str:

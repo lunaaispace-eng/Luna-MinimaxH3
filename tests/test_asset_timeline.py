@@ -31,6 +31,50 @@ class TagTests(unittest.TestCase):
         self.assertEqual(t, {"pictures": {}, "videos": {}, "video_audio": {}, "sounds": {}})
 
 
+class NamingTests(unittest.TestCase):
+    """h3_tags and the loader's `naming` (luna_naming.make via naming_cards) give every card the same tag."""
+
+    @staticmethod
+    def tags_from_naming(pic_roles, clips, sound_roles):
+        import luna_naming
+        from asset_timeline import ROW, naming_cards
+        naming = luna_naming.make(ROW, *naming_cards(pic_roles, clips, sound_roles))
+        out = {}
+        for key, entry in naming["map"].items():
+            if entry is not None:
+                out[key] = luna_naming.tag(naming["row"], *entry)
+        return out
+
+    @staticmethod
+    def tags_from_h3(t):
+        out = {f"@image{i + 1}": v for i, v in t["pictures"].items()}
+        out.update({f"@video{k + 1}": v for k, v in t["videos"].items()})
+        out.update({f"@audio{j + 1}": v for j, v in t["sounds"].items()})
+        return out
+
+    def test_acceptance_a(self):
+        # The JS card rule's case (tests/test_asset_naming.mjs) with h3_tags' answer.
+        clips = [{"role": "ref", "sound": True}]
+        t = h3_tags(["key", "ref", "ref"], clips, ["lock", "ref"])
+        self.assertEqual(t, {"pictures": {1: "<Picture 1>", 2: "<Picture 2>"}, "videos": {0: "<Video 1>"},
+                             "video_audio": {0: "<Audio 1>"}, "sounds": {1: "<Audio 2>"}})
+        self.assertEqual(self.tags_from_naming(["key", "ref", "ref"], clips, ["lock", "ref"]), self.tags_from_h3(t))
+
+    def test_every_small_card_set_agrees(self):
+        import itertools
+        clip_kinds = [{"role": r, "sound": s} for r in ("ref", "guide") for s in (True, False)]
+        cases = 0
+        for n_p, n_v, n_a in itertools.product(range(4), range(3), range(4)):
+            for pics in itertools.product(("ref", "key"), repeat=n_p):
+                for clips in itertools.product(clip_kinds, repeat=n_v):
+                    for sounds in itertools.product(("ref", "lock", "guide"), repeat=n_a):
+                        t = h3_tags(list(pics), list(clips), list(sounds))
+                        self.assertEqual(self.tags_from_naming(list(pics), list(clips), list(sounds)),
+                                         self.tags_from_h3(t), (pics, clips, sounds))
+                        cases += 1
+        self.assertEqual(cases, 15 * 21 * 40)
+
+
 class PlacementTests(unittest.TestCase):
     def test_everything_inside_the_shot_passes(self):
         self.assertEqual(check_placements(124, [("<P1>", 0, 1), ("V1", 34, 39), ("P3", 123, 1)]), [])

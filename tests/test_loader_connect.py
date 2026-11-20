@@ -6,6 +6,7 @@ refs["song"] and refs["items"], and Refs Out's switches, rebuilt brief and `audi
 Loads the whole pack through ComfyUI's modules, like test_registration.py.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -252,6 +253,118 @@ class RefsOutTests(unittest.TestCase):
     def test_not_a_dict(self):
         out = RefsOut().unpack(None)
         self.assertEqual(len(out), len(RefsOut.RETURN_NAMES))
+
+
+LN = _module("luna_naming")
+
+# Acceptance case A: picture cards [key, ref, ref]; clip V1 a reference with its sound kept; sound card 1 the
+# song, locked; sound card 2 a reference sound.
+CASE_A = json.dumps({"pictures": [{"role": "key", "at": 0}, {}, {}],
+                     "video": [{"file": "c.mp4", "role": "ref"}],
+                     "audio": [{"file": "s.mp3", "role": "lock"}, {"file": "b.wav", "role": "ref"}]})
+SONG_LINE = "Song: s.mp3 0:00.00-0:00.02 (0.02 s)."
+SOUND_LINE = "b.wav 0:00.00-0:01.00 (1.00 s)"
+NAMES_A = ("@ names: @image1 = not sent; @image2 = <Picture 1>; @image3 = <Picture 2>; @video1 = <Video 1>; "
+           "@audio1 = not sent; @audio2 = <Audio 2>.")
+
+
+def load_case(media=CASE_A, paths="a.png\nb.png\nc.png"):
+    with patch.object(AL, "_load", fake_load), \
+            patch.object(Loader, "_clips", staticmethod(lambda *a, **k: clip_stub(SONG))), \
+            patch.object(Loader, "_song", staticmethod(lambda *a, **k: (SONG, {"name": "s.mp3", "start": 0.0, "seconds": 0.02}, SONG_LINE))), \
+            patch.object(Loader, "_sounds", staticmethod(lambda cards: {1: (SONG, SOUND_LINE)})):
+        return Loader().load(paths, len(paths.split("\n")), media_state=media)["result"]
+
+
+class NamingTests(unittest.TestCase):
+    """The @ names (SPEC § 2, Naming): refs["naming"], the loader's names line, Refs Out's recounted one."""
+
+    def test_a_map(self):
+        refs = load_case()[5]
+        self.assertEqual(refs["naming"]["row"], "minimax")
+        self.assertEqual(refs["naming"]["map"], {"@image1": None, "@image2": ("image", 1), "@image3": ("image", 2),
+                                                 "@video1": ("video", 1), "@audio1": None, "@audio2": ("audio", 2)})
+        # The lists say exactly what refs carries: two pictures, one clip with its sound, one standalone sound.
+        self.assertEqual((len(refs["images"]), len(refs["videos"]), len(refs["audios"])), (2, 1, 1))
+        self.assertIsNotNone(refs["video_audios"][0])
+
+    def test_a_map_agrees_with_the_brief_tags(self):
+        out = load_case()
+        refs, brief = out[5], out[3]
+        for key, entry in refs["naming"]["map"].items():
+            if entry is not None:
+                self.assertIn(f"{LN.tag('minimax', *entry)} = ", brief, key)
+        self.assertIn("<Picture 1> = 480x640", brief)          # card 2 (b.png) is <Picture 1>
+        self.assertIn("<Audio 2> = " + SOUND_LINE, brief)
+
+    def test_a_brief_has_the_names_line_after_the_references(self):
+        brief = load_case()[3]
+        self.assertIn(NAMES_A, brief)
+        self.assertIn("@image2 = <Picture 1>", brief)
+        self.assertIn("@audio2 = <Audio 2>", brief)
+        at = brief.index(NAMES_A)
+        self.assertLess(brief.index("<Audio 2> = " + SOUND_LINE), at)
+        self.assertLess(at, brief.index("On the shot"))
+        self.assertLess(at, brief.index(SONG_LINE))
+        self.assertEqual(load_case()[5]["brief"], brief)
+        self.assertNotIn("@", " ".join(load_case()[5]["items"]["extra"]))   # Refs Out writes its own line
+
+    def test_b_refs_out_recounts_the_names(self):
+        refs = load_case()[5]
+        b_sound = RO.build_brief(refs, clip_sound=False)
+        self.assertIn("@audio2 = <Audio 1>", b_sound)
+        self.assertIn("<Audio 1> = " + SOUND_LINE, b_sound)      # the inventory says the same
+        b_pics = RO.build_brief(refs, pictures=False)
+        self.assertIn("@image2 = not sent", b_pics)
+        self.assertNotIn("<Picture", b_pics)
+        self.assertIn(NAMES_A, RO.build_brief(refs))            # all on: the loader's own line
+        # B2: a writer reading the line back gets the switched map.
+        self.assertEqual(LN.read_names_line(b_sound)["map"]["@audio2"], ("audio", 1))
+        self.assertIsNone(LN.read_names_line(b_pics)["map"]["@image2"])
+        self.assertEqual(RefsOut().unpack(refs, clip_sound=False)[-2], b_sound)
+
+    def test_b3_a_qwen_payload_is_written_in_minimax_tags(self):
+        refs = {"images": ["i0", "i1"],
+                "items": {"images": ["1:1", "16:9"], "videos": [], "video_audios": [], "audios": [], "song": "",
+                          "extra": []},
+                "naming": LN.make("qwen", ["ref", "edit"])}
+        brief = RO.build_brief(refs)
+        self.assertIn("Reference images, in order: <Picture 1> = 1:1; <Picture 2> = 16:9.", brief)
+        self.assertIn("@ names: @image1 = <Picture 2>; @image2 = <Picture 1>.", brief)
+
+    def test_c_refs_without_naming_give_todays_brief(self):
+        refs = load_case()[5]
+        old = {k: v for k, v in refs.items() if k != "naming"}
+        for switches in ({}, {"pictures": False}, {"clip_sound": False}, {"clips": False}, {"sounds": False},
+                         {"song": False}):
+            with_names = RO.build_brief(refs, **switches)
+            without = RO.build_brief(old, **switches)
+            self.assertNotIn("@ names", without)
+            self.assertEqual(without, with_names.replace(" " + LN.names_line(
+                LN.remake(refs["naming"], **{k: v for k, v in switches.items() if k != "song"}), "minimax"), ""))
+
+    def test_c_old_refs_without_items_keep_their_brief_and_get_the_line(self):
+        refs = load_case()[5]
+        old = {k: v for k, v in refs.items() if k != "items"}
+        self.assertEqual(RO.build_brief(old), refs["brief"])                 # its line is already the minimax one
+        b = RO.build_brief(old, clip_sound=False)
+        self.assertIn("@audio2 = <Audio 1>", b)
+        self.assertEqual(b.count("@ names:"), 1)
+
+    def test_d_nothing_loaded(self):
+        refs = Loader().load("", 2)["result"][5]
+        naming = refs["naming"]
+        self.assertEqual(naming["map"], {})
+        self.assertEqual(naming["counts"], {"image": 0, "video": 0, "audio": 0})
+        self.assertIs(LN.from_refs(refs), naming)
+        self.assertEqual(RO.build_brief(refs), "")
+        self.assertEqual(RefsOut().unpack(refs)[-2], "")
+
+    def test_keyframe_only_names_every_card_not_sent(self):
+        media = json.dumps({"pictures": [{"role": "key", "at": 0}]})
+        out = load_case(media, "a.png")
+        self.assertEqual(out[5]["naming"]["map"], {"@image1": None})
+        self.assertIn("@ names: @image1 = not sent.", out[3])
 
 
 class ReferenceLoaderRefsTests(unittest.TestCase):

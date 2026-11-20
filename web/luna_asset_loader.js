@@ -123,7 +123,8 @@ const CSS = `
 .luna-al-aed { display:flex; flex-direction:column; gap:6px; border:1px solid var(--luna-border);
                border-radius:8px; background:var(--luna-bg); padding:7px; }
 .luna-al-ahead { display:flex; align-items:center; gap:8px; color:var(--luna-muted); font-size:10.5px; }
-.luna-al-ahead b { color:#e07bb4; font-size:11px; }
+.luna-al-ahead b { color:#e07bb4; font-size:11px; white-space:nowrap; flex:0 0 auto; }
+.luna-al-ahead .nm { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .luna-al-ahead .sp { flex:1 1 auto; }
 .luna-al-play { width:26px; height:20px; border-radius:5px; border:1px solid var(--luna-border);
                 background:var(--luna-panel); color:var(--luna-text); text-align:center; line-height:18px; cursor:pointer; }
@@ -210,8 +211,11 @@ const CSS = `
 .luna-al-blk.vid { background:#d98a6a; } .luna-al-blk.snd { background:#e07bb4; }
 .luna-al-blk.key { width:20px; margin-left:-10px; justify-content:center; padding:0; background:var(--luna-accent); }
 .luna-al-blk.sel { box-shadow:0 0 0 2px #fff; }
-.luna-al-refs { display:flex; gap:4px; flex-wrap:wrap; align-items:center; min-height:22px; }
-.luna-al-chip { font-size:9.5px; font-weight:700; padding:2px 6px; border-radius:5px; cursor:pointer; color:var(--luna-bg); }
+/* One row that scrolls sideways: the timeline's height is fixed arithmetic (TIMELINE), so the chips never wrap. */
+.luna-al-refs { display:flex; gap:4px; flex-wrap:nowrap; align-items:center; min-height:22px; overflow-x:auto;
+                overflow-y:hidden; scrollbar-width:thin; min-width:0; }
+.luna-al-chip { font-size:9.5px; font-weight:700; padding:2px 6px; border-radius:5px; cursor:pointer; color:var(--luna-bg);
+                white-space:nowrap; flex:0 0 auto; }
 .luna-al-chip.p { background:var(--luna-accent); } .luna-al-chip.v { background:#d98a6a; } .luna-al-chip.a { background:#e07bb4; }
 .luna-al-tlnote { font-size:10px; color:var(--luna-muted); line-height:1.4; }
 
@@ -374,23 +378,43 @@ const clipRole = (c) => (c.role === "guide" ? "guide" : "ref");
 const soundRole = (c, j) => (c.role === "lock" ? (j === 0 ? "lock" : "guide")
     : ["guide", "ref"].includes(c.role) ? c.role : j === 0 ? "lock" : "ref");
 
-// Mirror of asset_timeline.h3_tags: H3 numbers ONLY the references, in order, so
-// a keyframe on card 1 makes card 2 <Picture 1>. Sound order: each reference
-// clip's kept soundtrack, then the standalone reference sounds.
-function h3Tags(node) {
-    const m = readMedia(node), n = readPaths(node).length;
-    const out = { pictures: {}, videos: {}, videoAudio: {}, sounds: {} };
+// --- naming rule: begin (pure; tests\test_asset_naming.mjs runs this block outside ComfyUI) ---
+// Mirror of asset_timeline.h3_tags, which is luna_naming.assign / tag in the minimax row (the Asset
+// Loader's row for every ⚙ Target). H3 numbers ONLY the references, in order, so a keyframe on card 1
+// makes card 2 <Picture 1>. Sound order: each reference clip's kept soundtrack right before its clip,
+// then the standalone reference sounds.
+//   pics: "ref" | "key" per picture card; clips: { role: "ref" | "guide", sound: bool } per clip card;
+//   sounds: "ref" | "lock" | "guide" per sound card.
+// names: each card's @ name (its card number) with what H3 receives: its tag, or its part on the shot.
+function cardTags(pics, clips, sounds) {
+    const out = { pictures: {}, videos: {}, videoAudio: {}, sounds: {}, names: {} };
     let p = 0, v = 0, a = 0;
-    for (let i = 0; i < n; i++) if (picRole(m, i) === "ref") out.pictures[i] = `<Picture ${++p}>`;
-    m.video.forEach((c, k) => {
-        if (clipRole(c) !== "ref") return;
-        // A kept soundtrack counts only when the file has sound (known once its info is in).
-        if (c.sound !== "drop" && _hasSound.get(c.file) !== false) out.videoAudio[k] = `<Audio ${++a}>`;
+    pics.forEach((role, i) => { if (role === "ref") out.pictures[i] = `<Picture ${++p}>`; });
+    clips.forEach((c, k) => {
+        if (c.role !== "ref") return;
+        if (c.sound) out.videoAudio[k] = `<Audio ${++a}>`;
         out.videos[k] = `<Video ${++v}>`;
     });
-    m.audio.forEach((c, j) => { if (soundRole(c, j) === "ref") out.sounds[j] = `<Audio ${++a}>`; });
+    sounds.forEach((role, j) => { if (role === "ref") out.sounds[j] = `<Audio ${++a}>`; });
+    const onShot = (role, j) => (role === "lock" ? "song lock" : j === 0 ? "song guide" : "guide");
+    out.names = {
+        p: pics.map((_, i) => `@image${i + 1} · ${out.pictures[i] || "keyframe"}`),
+        v: clips.map((_, k) => `@video${k + 1} · ${out.videos[k] || "guide clip"}`),
+        a: sounds.map((role, j) => `@audio${j + 1} · ${out.sounds[j] || onShot(role, j)}`),
+    };
     return out;
 }
+// --- naming rule: end ---
+
+function h3Tags(node) {
+    const m = readMedia(node), n = readPaths(node).length;
+    return cardTags(
+        Array.from({ length: n }, (_, i) => picRole(m, i)),
+        // A kept soundtrack counts only when the file has sound (known once its info is in).
+        m.video.map((c) => ({ role: clipRole(c), sound: c.sound !== "drop" && _hasSound.get(c.file) !== false })),
+        m.audio.map((c, j) => soundRole(c, j)));
+}
+const escTag = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /* -------------------------------------------------------------- ⚙ panel */
 
@@ -1370,6 +1394,8 @@ function buildUI(node) {
             warn.textContent = `MiniMax H3 takes at most ${MAX} references.`;
             cards.appendChild(warn);
         }
+        // Each card's @ name and the tag H3 receives (cardTags), for the card titles.
+        const tags = h3Tags(node), names = tags.names;
 
         paths.forEach((name, i) => {
             const card = document.createElement("div");
@@ -1387,7 +1413,10 @@ function buildUI(node) {
             const pic = document.createElement("div");
             pic.className = "luna-al-pic";
             pic.textContent = i + 1;
-            pic.title = `<Picture ${i + 1}>`;
+            // The real tag: a keyframe on an earlier card moves this one's <Picture n> down.
+            const label = names.p[i];
+            pic.title = label;
+            card.title = `${label}\n${name}`;
 
             const cap = document.createElement("div");
             cap.className = "luna-al-cap";
@@ -1407,7 +1436,7 @@ function buildUI(node) {
                 const w = img.naturalWidth, h = img.naturalHeight;
                 const ar = describeAR(w, h);
                 dim.textContent = `${w}×${h} ${ar.short}`;
-                card.title = `<Picture ${i + 1}>  —  ${w} × ${h} (${ar.long})\n${name}`;
+                card.title = `${label}  —  ${w} × ${h} (${ar.long})\n${name}`;
                 // The panel's INPUT → OUTPUT preview needs the decoded size, which
                 // only exists once the thumbnail has loaded.
                 natural.set(name, [w, h]);
@@ -1463,7 +1492,12 @@ function buildUI(node) {
             const card = document.createElement("div");
             card.className = "luna-al-card" + (i === selVideo ? " sel" : "");
             card.style.cursor = "pointer";
-            card.title = `<Video ${i + 1}>\n${c.file}`;
+            // Read at hover: whether the clip has sound (its <Audio n>) is only known once its info is in.
+            card.title = `${names.v[i]}\n${c.file}`;
+            card.addEventListener("mouseenter", () => {
+                const t = h3Tags(node);
+                card.title = `${t.names.v[i]}${t.videoAudio[i] ? `, its sound ${t.videoAudio[i]}` : ""}\n${c.file}`;
+            });
             card.onclick = () => pick("v", i);
             const img = document.createElement("img");
             img.className = "luna-al-vthumb";
@@ -1506,7 +1540,10 @@ function buildUI(node) {
         media.audio.forEach((c, i) => {
             const card = document.createElement("div");
             card.className = "luna-al-card snd" + (i === selAudio ? " sel" : "");
-            card.title = `Sound ${i + 1}${i === 0 ? " — the song on the audio output" : ""}\n${c.file}`;
+            // Read at hover: a silent clip moves the <Audio n> numbers once its info is in.
+            const soundTitle = (t) => `${t.names.a[i]}${i === 0 ? " — the song on the audio output" : ""}\n${c.file}`;
+            card.title = soundTitle(tags);
+            card.addEventListener("mouseenter", () => { card.title = soundTitle(h3Tags(node)); });
             card.onclick = () => pick("a", i);
             const cv = document.createElement("canvas");
             cv.className = "luna-al-snd";
@@ -1699,8 +1736,8 @@ function buildUI(node) {
         r6.append(all, reset);
     }
 
-    // What H3 calls picture card i: its real tag when it is a reference, or that it is a keyframe.
-    const picLabel = (i) => h3Tags(node).pictures[i] || `Card ${i + 1} · keyframe`;
+    // Picture card i's @ name and what H3 calls it: its real tag when it is a reference, or that it is a keyframe.
+    const picLabel = (i) => h3Tags(node).names.p[i] || `@image${i + 1}`;
 
     /* ------------------------------------------------------- shot timeline */
 
@@ -1841,22 +1878,22 @@ function buildUI(node) {
         paths.forEach((name, i) => {
             if (picRole(m, i) === "key") {
                 const at = Number(m.pictures[i]?.at) || 0;
-                place(tp, "key", "p", i, at, 1, String(i + 1), `Picture card ${i + 1} — keyframe at frame ${at}`, selAudio < 0 && selVideo < 0 && selected === i);
-            } else chip("p", `${tags.pictures[i]} = ${i + 1}`, "p", i, `${tags.pictures[i]} in the prompt is picture card ${i + 1} (${name})`);
+                place(tp, "key", "p", i, at, 1, String(i + 1), `${tags.names.p[i]}: picture card ${i + 1} at frame ${at}, not sent as a reference`, selAudio < 0 && selVideo < 0 && selected === i);
+            } else chip("p", tags.names.p[i], "p", i, `@image${i + 1} in the prompt becomes ${tags.pictures[i]}: picture card ${i + 1} (${name})`);
         });
         m.video.forEach((c, k) => {
             if (clipRole(c) === "guide") {
                 const len = clipLen(c), at = Number(c.at) || 0;
-                place(tv, "vid", "v", k, at, len, `V${k + 1} · ${at}–${at + len - 1}`, `Clip V${k + 1} on the shot`, selVideo === k);
-            } else chip("v", `${tags.videos[k]} = V${k + 1}` + (tags.videoAudio[k] ? ` + ${tags.videoAudio[k]}` : ""), "v", k,
-                `${tags.videos[k]} in the prompt is clip card V${k + 1}` + (tags.videoAudio[k] ? `; its sound is ${tags.videoAudio[k]}` : ""));
+                place(tv, "vid", "v", k, at, len, `V${k + 1} · ${at}–${at + len - 1}`, `${tags.names.v[k]}: clip V${k + 1} on the shot, not sent as a reference`, selVideo === k);
+            } else chip("v", tags.names.v[k] + (tags.videoAudio[k] ? ` + ${tags.videoAudio[k]}` : ""), "v", k,
+                `@video${k + 1} in the prompt becomes ${tags.videos[k]}: clip card V${k + 1}` + (tags.videoAudio[k] ? `; its sound is ${tags.videoAudio[k]}` : ""));
         });
         m.audio.forEach((c, j) => {
             const role = soundRole(c, j);
-            if (role === "ref") { chip("a", `${tags.sounds[j]} = A${j + 1}`, "a", j, `${tags.sounds[j]} in the prompt is sound card A${j + 1}`); return; }
+            if (role === "ref") { chip("a", tags.names.a[j], "a", j, `@audio${j + 1} in the prompt becomes ${tags.sounds[j]}: sound card A${j + 1}`); return; }
             const at = Number(c.at) || 0;
             place(ta, "snd", "a", j, at, S - at, `A${j + 1} · ${role === "lock" ? "locked" : "guide"} from ${at}`,
-                `Sound A${j + 1} ${role === "lock" ? "locked — the picture follows it" : "as a guide"}, from frame ${at}`, selAudio === j);
+                `${tags.names.a[j]}: sound A${j + 1} ${role === "lock" ? "locked — the picture follows it" : "as a guide"}, from frame ${at}, not sent as a reference`, selAudio === j);
         });
         if (!refs.children.length) refs.innerHTML = `<span class="luna-al-tlnote">none — everything is on the shot</span>`;
         q(".luna-al-tlnote").textContent = `${targetOf(m).label}: ${targetOf(m).note}`
@@ -1936,7 +1973,7 @@ function buildUI(node) {
         const shotNo = () => Math.max(1, Math.round(wsh.wired && wsh.value > 0 ? wsh.value : Number(card.shot) || 1));
 
         aed.innerHTML = `
-            <div class="luna-al-ahead"><b>A${idx + 1}</b><span class="nm"></span><span class="sp"></span><span class="meta">reading the song…</span>
+            <div class="luna-al-ahead"><b>${escTag(h3Tags(node).names.a[idx])}</b><span class="nm"></span><span class="sp"></span><span class="meta">reading the song…</span>
               <div class="luna-al-play" title="Play the window">▶</div></div>
             <div class="luna-al-ztools"><span class="l">Zoom</span><span class="luna-al-nud" data-z="out" title="Zoom out">−</span><span class="luna-al-nud" data-z="in" title="Zoom in (or the mouse wheel over the song)">+</span><span class="luna-al-nud zfit" data-z="fit" title="The whole song">Fit</span><span class="zx"></span><span class="sp"></span><span class="zr"></span></div>
             <div class="luna-al-wave"><canvas></canvas><div class="luna-al-win"><div class="h l"></div><div class="h r"></div><div class="tag"></div></div><div class="luna-al-ph"></div></div>
@@ -2306,7 +2343,7 @@ function buildUI(node) {
         const ww = wiredNumber("width", () => null), wh = wiredNumber("height", () => null);
 
         ved.innerHTML = `
-            <div class="luna-al-ahead"><b>&lt;Video ${idx + 1}&gt;</b><span class="nm"></span><span class="sp"></span><span class="meta">reading the clip…</span>
+            <div class="luna-al-ahead"><b>${escTag(h3Tags(node).names.v[idx])}</b><span class="nm"></span><span class="sp"></span><span class="meta">reading the clip…</span>
               <div class="luna-al-play" title="Play the clip window">▶</div></div>
             <video class="luna-al-video" playsinline preload="metadata"></video>
             <div class="luna-al-zlbl"><span>The whole clip · drag the window to choose the part</span><span class="zr"></span></div>

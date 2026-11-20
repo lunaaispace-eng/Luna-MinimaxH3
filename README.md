@@ -24,8 +24,8 @@ Every node:
 - **Luna-H3-Canvas**: H3 resolution, frame count (`frames`) and fps from ratio and seconds; an optional `image` sets the aspect.
 - **Luna-H3-ConcatAVLatent**: Merges a video and an audio latent into H3's AV latent.
 - **Luna-H3-ReferenceLoader**: Every H3 reference in one node: 9 images, 3 clips, 3 audio.
-- **Luna-H3-AssetLoader**: Up to 9 ordered reference images, clips and a song; outputs include `video` and `frames`, and it runs empty.
-- **Luna-H3-RefsOut**: Unpacks the loader refs into every H3 reference socket; per-category on/off switches, a rebuilt `asset_brief`, and the song as `audio`.
+- **Luna-H3-AssetLoader**: Up to 9 ordered reference images, clips and a song; outputs include `video` and `frames`, and it runs empty. Each card shows its @ name (@image2, @video1, @audio1: the card number) and the tag H3 receives; `asset_brief` ends its references with the @ names line (`@image2 = <Picture 1>`), and `refs` carries the map.
+- **Luna-H3-RefsOut**: Unpacks the loader refs into every H3 reference socket; per-category on/off switches, a rebuilt `asset_brief` with the @ names line recounted for the switches, and the song as `audio`.
 - **Luna-H3-ShotList**: Scenes of different lengths over one song, one scene per run.
 - **Luna-H3-LoopStart**: Starts a scene loop from a JSON scene list.
 - **Luna-H3-LoopScene**: The current scene's settings, audio window, seeds and refs.
