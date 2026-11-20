@@ -60,6 +60,108 @@ Every node:
 - The learned latent upscaler `minimax_h3_latent_upscaler_3d_fp16.safetensors` is optional (`upscaler_model: none` lifts with
   nearest).
 
+### Set it up, step by step
+
+**1. What you need**
+- ComfyUI 0.43 nightly (2026-10-28) or newer: MiniMax H3 is in ComfyUI core from then on.
+- This node pack, [Luna-MinimaxH3](https://github.com/lunaaispace-eng/Luna-MinimaxH3): in ComfyUI's `custom_nodes` folder run
+  `git clone https://github.com/lunaaispace-eng/Luna-MinimaxH3`, then restart ComfyUI. The Sampler needs no other node pack.
+- The model files, in these `ComfyUI/models` folders:
+
+| File | Folder | Where |
+|---|---|---|
+| `minimax_h3_ref2va_pruned_int8_convrot` (or a fine-tune) | `diffusion_models` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/diffusion_models) |
+| `qwen3vl_32b_minimax_h3_int8_convrot` | `text_encoders` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/text_encoders) |
+| `minimax_h3_video_vae_int8_convrot` | `vae` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/vae) |
+| `minimax_h3_audio_vae_fp32` | `vae` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/vae) |
+| A speed LoRA pair (see step 4) | `loras` | DMAD: [ZhengmingYu/DMAD](https://huggingface.co/ZhengmingYu/DMAD); Pika: [Pika-Labs/Pika-H3-Flex](https://huggingface.co/Pika-Labs/Pika-H3-Flex); lightx: [lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo) |
+| `minimax_h3_latent_upscaler_3d_fp16`, optional | `latent_upscale_models` | [Open-H3-Regenerate-2K](https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K) |
+
+**2. Start from an example**
+- In ComfyUI open Templates › Custom Nodes › Luna-MinimaxH3 › `Luna-H3-Sampler - Reference to Video`.
+- In each loader pick your files from step 1. A red node means a file or a node is missing.
+
+**3. Or wire it yourself** (the same graph, ComfyUI core nodes only)
+1. `Load Diffusion Model` (UNETLoader): the H3 model.
+2. `Load CLIP` (CLIPLoader), type `minimax`: the text encoder.
+3. Two `Load VAE`: the video VAE and the audio VAE.
+4. The H3 conditioning node, for example `MiniMaxH3ReferenceToVideo`: prompt, `width`, `height`, `length`, reference
+   pictures. Its `positive` and `latent` go to the Sampler. Size and length are the final video's.
+5. `ConditioningZeroOut` on that `positive` gives the `negative` (CFG 1 with a speed LoRA).
+6. Two `KSamplerSelect` nodes, one into `sampler_low`, one into `sampler_high`. The ⚙ menu sets their sampler names.
+7. **Luna-H3-Sampler**: `model`, `positive`, `negative`, `vae` (the video VAE), `latent_image` (from the H3 node, never an
+   Empty Latent Image: it must be H3's audio+video latent).
+8. Its `latent` output into `VAE Decode` (video VAE) for the frames and `VAE Decode Audio` (audio VAE) for the sound, both
+   into `Create Video` (24 fps), then `Save Video`.
+
+**4. Set the values with the ⚙ menu**
+1. Click the ⚙ on the Sampler's title bar.
+2. Tab **Recipes**, pick one:
+   - **Natural skin · 2 MP**: DMAD 8-step LoRA in pass 1, DMAD 4-step in pass 2. Truest faces in our tests.
+   - **Smooth · 2 MP**: the two Pika LoRAs. Smoother motion, a little washed out.
+   - **Fast · lightx 12 / 9**: the lightx turbo LoRA in both passes.
+   - A recipe whose LoRA file is not in `models/loras` shows "missing" and cannot be applied.
+3. **Validate**, then **Apply**. Apply sets the LoRAs, strengths, shifts, steps, `transition`, `handover_sigma`,
+   `lowres_scale` and the two KSamplerSelect sampler names.
+4. The readout under the node now names the recipe. Change a widget and it says "custom (changed from …)".
+- Other LoRAs: tab **Custom**. Pick the two LoRAs and the final size; the node recommends the rest; **Apply**.
+
+**5. The settings of each recipe** (what Apply writes; set them by hand if you do not use the ⚙ menu)
+
+| Setting | Natural skin | Smooth | Fast |
+|---|---|---|---|
+| `lora_low`, strength | DMAD 8-step rank 58, 1.0 | Pika ref2va rank 55, 1.0 | lightx fl2v turbo rank 21, 0.6 |
+| `lora_high`, strength | DMAD 4-step rank 39, 1.0 | Pika fl2va, 1.0 | lightx fl2v turbo rank 21, 0.8 |
+| sampler pass 1 / pass 2 (KSamplerSelect) | `lcm` / `er_sde` | `lcm` / `lcm` | `euler` / `euler` |
+| `scheduler_low`, `scheduler_high` | `simple` | `linear_quadratic` | `simple` |
+| `shift_low`, `shift_high` | 12 | 12 | 12 |
+| `audio_shift_low`, `audio_shift_high` | 2 | 3 | 3 |
+| `cfg_low`, `cfg_high` | 1 | 1 | 1 |
+| `total_steps` / `transition` | 6 / 4 | 8 / 5 | 12 / 9 |
+| `handover_sigma` | 0.923077 | 0 | 0 |
+| `highres_denoise` | 1 | 1 | 1 |
+| `lowres_scale` | by size, step 6 | by size, step 6 | by size, step 6 |
+| `upscaler_model` | `minimax_h3_latent_upscaler_3d_fp16`, or `none` | same | same |
+| `rho`, `w_min`, `w_max` | 0, 0.5, 1 | 0, 0.5, 1 | 0, 0.5, 1 |
+
+- These values do not change with the resolution: only `lowres_scale` does (step 6).
+- All three are tested at 1920x1088 (2 MP), 5 s, once each; Smooth also at 1344x768 (1 MP) with `lowres_scale` 0.5.
+
+**6. Size and length**
+- Only `lowres_scale` changes with the size; the recipe's other settings (step 5) stay the same.
+
+| Final size | MP | `lowres_scale` | Pass 1 | Tested |
+|---|---|---|---|---|
+| 1344x768 | 1.0 | 0.5 | 672x384 | yes: clean, with the Smooth settings (Pika, `lcm`, `linear_quadratic`, 8 / 5) and the upscaler |
+| 1920x1088 | 2.0 | 0.7 | about 1 MP | yes: clean, all three recipes. 0.5 is too small here: it draws letters |
+| 1280x720, 960x544 | 0.9, 0.5 | 0.5 | a quarter of the area | no; 0.5 as at 1 MP |
+| 1536x864 | 1.3 | 0.85 | about 1 MP | no |
+| 2560x1440 | 3.5 | 0.5 | about 1 MP | no |
+| 3840x2176 | 8.0 | 0.35 | about 1 MP | no |
+
+- Up to 1 MP: `lowres_scale` 0.5. Above 1 MP: pass 1 at about 1 MP, `lowres_scale` = √(1 MP ÷ final MP) in steps of 0.05.
+  The ⚙ **Custom** tab computes that second rule from the final size.
+- For a 2K or 4K video: render at 1344x768 with 0.5, then upscale the video (tested: Luna-RelayVSR x2 to 2688x1536,
+  178 s for the whole graph). Far faces are smaller at 1 MP, so they keep less detail than a 2 MP render.
+- Memory grows with the final size: 2 MP, 5 s is tested on an RTX 4090 (24 GB) with 64 GB RAM.
+- Width and height are multiples of 32. H3 lengths are 17·k + 5 frames: 124 frames = 5 s at 24 fps.
+- Close other GPU programs first.
+
+**7. Run**
+- Queue. The readout shows which steps run small and which at full size, and the hand-over sigma.
+
+**8. If it stops with an error**
+
+| Message | Fix |
+|---|---|
+| `latent_image must be an H3 audio+video latent` | Wire `latent_image` from the H3 conditioning node, not an Empty Latent Image. |
+| `low_res_model must be a rectified-flow model (MiniMax H3)` | `model` is not an H3 model. Load the H3 diffusion model. |
+| `transition N is not in [1, M]` | `transition` must be at least 1 and below `total_steps`. |
+| A recipe shows "missing" | Put that LoRA file in `models/loras` and reopen the ⚙ menu. |
+| Apply says `sampler_low is not connected` | Wire a `KSamplerSelect` into `sampler_low` and `sampler_high`. |
+| A red node, "missing node type" | Update ComfyUI to a nightly with H3, install this pack, restart. |
+| `upscaler_model` lists only `none` | Optional: put the upscaler file in `models/latent_upscale_models` and restart. |
+
 ### How it works
 
 - One schedule of `total_steps`.
@@ -84,7 +186,7 @@ Every node:
   `positive_low`, `negative_low`, `handover_sigma` (a widget, default 0).
 - Outputs: `latent` (full size) and `low_res_latent` (pass 1 on the low grid, for the next scene's `low_res_head`).
 
-### How to use it
+### Settings in detail
 
 **Where pass 2 starts**
 - `handover_sigma` above 0 (default 0, the step split; the ⚙ menu sets it per LoRA pair): the hand-over is a noise level. Pass 1 runs its `transition` steps from 1 down to it,
