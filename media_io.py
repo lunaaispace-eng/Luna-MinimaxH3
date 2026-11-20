@@ -1,4 +1,9 @@
-"""Video and audio decoding for the Luna-H3-AssetLoader's reference clips.
+"""Video and audio decoding for Luna-H3-AssetLoader (Luna-MinimaxH3) and Luna-LoadVideo (Luna-Media-Tools).
+
+One file, hand-copied and identical in both packs (Luna-MinimaxH3 `tests/test_media_io.py` and Luna-Media-Tools
+`tests/test_media_io_copy.py` compare the copies). Its messages name the node that calls it: every function that
+words an error takes `who`. The frame rule is `luna_units.py` (frames rounded UP onto the grid, above 362 a warning,
+not a cut); only a cut to what a file holds rounds down.
 
 MiniMax H3's LOCAL reference node — `MiniMaxH3ReferenceToVideo` in ComfyUI's
 `comfy_extras/nodes_minimax_h3.py` — is not the cloud API node of the same
@@ -34,12 +39,19 @@ import os
 import numpy as np
 import torch
 
+# The shared frame rule. Imported both ways this module is loaded: inside its pack (a relative import) and on its
+# own, with the pack root on sys.path (the tests).
+try:
+    from . import luna_units as _units
+except ImportError:
+    import luna_units as _units
+
 # H3's own numbers, read out of comfy_extras/nodes_minimax_h3.py rather than
 # remembered — getting one wrong yields a clip subtly out of step, not an error.
 FPS = 24
-FRAME_STEP = 17
-FRAME_PLUS = 5
-TRAINED_MAX_FRAMES = 362          # ~15.08 s, the top of the trained range
+FRAME_STEP, FRAME_PLUS = _units.GRIDS["h3"]
+TRAINED_MAX_FRAMES = _units.H3_TRAINED_MAX   # ~15.08 s, the top of the trained range: past it a warning, not a cut
+WHO = "media_io"                  # the default label; every node passes its own `who`
 REF_VIDEO_SHORT_EDGE = 768        # BASE_SHORT_EDGE; adapt_canvas lands here anyway
 
 VIDEO_EXTS = {"mp4", "mov", "mkv", "webm", "avi", "m4v", "mpg", "mpeg", "wmv", "flv"}
@@ -54,34 +66,18 @@ def snap_frames_down(n: int) -> int:
     had. 0 is returned rather than raising so the caller can name the file in
     the error.
     """
-    n = int(n)
-    if n < FRAME_PLUS:
-        return 0
-    while n % FRAME_STEP != FRAME_PLUS:
-        n -= 1
-    return n
+    return _units.frames_down(n, "h3")
 
 
-def snap_frames_nearest(n: int) -> int:
-    """The valid clip length closest to `n` — the target BEFORE decoding.
+def snap_frames_up(n) -> int:
+    """The H3 clip length for a count asked BEFORE decoding: rounded UP onto 17k+5 (120 -> 124), no 362 cut
+    (luna_units). The frames still have to exist: when the source runs out first, the caller cuts what it got down
+    with `snap_frames_down`, so this only ever asks, never invents."""
+    return _units.frames_up(n, "h3")
 
-    Rounding down unconditionally is wrong when the request sits just under a
-    grid point: 5 s is 120 frames, and the grid offers 107 (4.46 s) below and
-    124 (5.17 s) above. Taking 107 throws away three quarters of a second of
-    footage that was sitting right there, to honour a boundary the model does
-    not have. Nearest costs at most half a grid step either way and lands on
-    5.17 s for the request everyone actually makes.
 
-    The frames still have to exist. When the source runs out first the caller
-    falls back to `snap_frames_down` on what it got, so this can only ever ask —
-    never invent.
-    """
-    n = max(FRAME_PLUS, int(n))
-    lo = snap_frames_down(n) or FRAME_PLUS
-    hi = lo if lo == n else lo + FRAME_STEP
-    if hi > TRAINED_MAX_FRAMES:
-        return min(lo, TRAINED_MAX_FRAMES)
-    return hi if (n - lo) > (hi - n) else lo
+def _grid_name(grid: str) -> str:
+    return grid if grid in ("h3", "ltx") else "free"
 
 
 def _target_size(width: int, height: int, short_edge: int) -> tuple[int, int]:
@@ -104,13 +100,9 @@ def _target_size(width: int, height: int, short_edge: int) -> tuple[int, int]:
 # rules can be tested without a video file.
 
 def grid_frames(n: int, grid: str) -> int:
-    """Nearest frame count the target accepts: free, H3 (17k+5) or LTX (8k+1)."""
-    n = max(1, int(n))
-    if grid == "h3":
-        return snap_frames_nearest(n)
-    if grid == "ltx":
-        return max(1, int(round((n - 1) / 8.0)) * 8 + 1)
-    return n
+    """The frame count the target accepts, rounded UP: free (any whole count), H3 (17k+5) or LTX (8k+1).
+    No 362 cut; `luna_units.frames_warning` words the warning past it."""
+    return _units.frames_up(max(1, int(n)), _grid_name(grid))
 
 
 def pick_frames(src_times: list, out_fps: float, start_s: float, count: int) -> list:
@@ -204,7 +196,7 @@ def clip_bytes(frames: int, width: int, height: int, precision: str = "fp16") ->
     return int(frames) * int(width) * int(height) * 3 * (2 if precision == "fp16" else 4)
 
 
-# --- Luna Load Video -----------------------------------------------------------
+# --- Luna-LoadVideo -----------------------------------------------------------
 # Where the videos come from: a picked/uploaded file, a typed path or web link, or
 # a folder. These helpers are pure so the rules are tested without disk or network.
 
@@ -249,19 +241,12 @@ def download_name(url: str) -> str:
 # node face can show it and the run can refuse an oversized clip up front.
 
 def grid_count(n: int, grid: str, available: int) -> int:
-    """Frame count on the grid: nearest to `n`, never past `available`, 0 if none fits.
-    Unlike grid_frames there is no 362 cap — a loader may hand H3 more than it was
-    trained on; the node says so instead of cutting silently."""
-    n, available = max(1, int(n)), int(available)
-    if grid == "h3":
-        lo = snap_frames_down(n) or FRAME_PLUS
-        hi = lo if lo == n else lo + FRAME_STEP
-        pick = hi if (n - lo) > (hi - n) else lo
-        return pick if pick <= available else snap_frames_down(available)
-    if grid == "ltx":
-        pick = max(1, int(round((n - 1) / 8.0)) * 8 + 1)
-        return pick if pick <= available else (((available - 1) // 8) * 8 + 1 if available >= 1 else 0)
-    return min(n, available)
+    """Frame count on the grid: `n` rounded UP, but never past `available` (the frames the file holds from the
+    start); when the count up does not fit, what is there is cut DOWN onto the grid. 0 if none fits. No 362 cut:
+    a loader may hand H3 more than it was trained on, and the node says so (plan_load's notes)."""
+    g, available = _grid_name(grid), int(available)
+    pick = _units.frames_up(max(1, int(n)), g)
+    return pick if pick <= available else _units.frames_down(available, g)
 
 
 def plan_load(src: dict, start_s: float = 0.0, frames: int = 0, fps: float = 0.0,
@@ -272,7 +257,8 @@ def plan_load(src: dict, start_s: float = 0.0, frames: int = 0, fps: float = 0.0
 
     frames 0 = to the end of the file. fps 0 = the source's rate. width/height 0 =
     keep; one of them set = scale to it, keeping the shape; both = fit that box.
-    grid "h3" plays at 24 fps and cuts to 17k+5, "ltx" to 8k+1."""
+    grid "h3" plays at 24 fps and rounds the count UP onto 17k+5, "ltx" onto 8k+1, never past what the file
+    holds (grid_count)."""
     sw, sh = int(src.get("width") or 0), int(src.get("height") or 0)
     if not sw or not sh:
         raise ValueError("the frame size could not be read")
@@ -317,8 +303,8 @@ def plan_load(src: dict, start_s: float = 0.0, frames: int = 0, fps: float = 0.0
         notes.append(f"asked {asked} frames, the file has {available} from {start_s:.2f} s")
     elif asked > 0 and n != asked:
         notes.append(f"asked {asked} frames, the grid gives {n}")
-    if grid == "h3" and n > TRAINED_MAX_FRAMES:
-        notes.append(f"{n} frames is past H3's trained {TRAINED_MAX_FRAMES}")
+    if grid == "h3" and _units.frames_warning(n, "h3"):
+        notes.append(_units.frames_warning(n, "h3"))
     return {
         "frames": n, "delivered": delivered, "fps": out_fps, "out_fps": out_fps / nth,
         "seconds": n / out_fps, "size": size, "fit": fit, "width": ow, "height": oh,
@@ -350,7 +336,7 @@ def probe_media(path: str) -> dict:
 
 def decode_clip(path: str, start_s: float, frames: int, out_fps: float | None = None,
                 size: tuple = ("source",), fit: str = "crop", nth: int = 1,
-                precision: str = "fp16", grid: str = "free", who: str = "Luna-H3-AssetLoader"):
+                precision: str = "fp16", grid: str = "free", who: str = WHO):
     """One video window -> ([N, H, W, 3] float, info).
 
     start_s: where the clip opens in the source. frames: how many output frames,
@@ -435,7 +421,7 @@ def decode_clip(path: str, start_s: float, frames: int, out_fps: float | None = 
             f"the start may be past the end of the clip.")
     got = targets
     if got < int(frames) and grid != "free":
-        keep = snap_frames_down(got) if grid == "h3" else max(1, ((got - 1) // 8) * 8 + 1)
+        keep = _units.frames_down(got, _grid_name(grid))   # a cut to what exists rounds down
         if keep == 0:
             raise RuntimeError(
                 f"[{who}] {os.path.basename(path)} gave only {got} frame(s) from "
@@ -499,11 +485,13 @@ def filmstrip_jpeg(path: str, count: int = 12, height: int = 72) -> bytes:
 
 
 def decode_video(path: str, start_s: float = 0.0, seconds: float = 0.0,
-                 short_edge: int = REF_VIDEO_SHORT_EDGE):
+                 short_edge: int = REF_VIDEO_SHORT_EDGE, who: str = WHO):
     """One video file -> ([N, H, W, 3] float 0-1 at 24 fps, info dict).
 
-    `start_s` is where the window opens, `seconds` how long it runs (0 = as much
-    as H3 can take). The returned frame count is already snapped to H3's grid.
+    `start_s` is where the window opens, `seconds` how long it runs: rounded UP
+    onto H3's grid (5.0 s -> 124 frames), no 362 cut; past it info["warning"]
+    says so. seconds 0 = H3's trained length (362 frames). A clip that ends
+    first is cut DOWN to the grid's last valid length.
 
     Resampling is nearest-hold against a 24 fps timeline: a target time is
     advanced by 1/24 and the current source frame is emitted whenever it has
@@ -516,13 +504,13 @@ def decode_video(path: str, start_s: float = 0.0, seconds: float = 0.0,
 
     want = TRAINED_MAX_FRAMES
     if seconds and seconds > 0:
-        want = min(want, snap_frames_nearest(int(round(float(seconds) * FPS))))
+        want = _units.frames_for(float(seconds), FPS, "h3")
 
     frames: list[np.ndarray] = []
     with av.open(path) as container:
         if not container.streams.video:
             raise RuntimeError(
-                f"[Luna-H3-AssetLoader] {os.path.basename(path)} has no video stream."
+                f"[{who}] {os.path.basename(path)} has no video stream."
             )
         stream = container.streams.video[0]
         stream.thread_type = "AUTO"
@@ -531,7 +519,7 @@ def decode_video(path: str, start_s: float = 0.0, seconds: float = 0.0,
         src_h = int(stream.codec_context.height or 0)
         if not src_w or not src_h:
             raise RuntimeError(
-                f"[Luna-H3-AssetLoader] Could not read the frame size of "
+                f"[{who}] Could not read the frame size of "
                 f"{os.path.basename(path)}."
             )
         tw, th = _target_size(src_w, src_h, short_edge)
@@ -566,14 +554,14 @@ def decode_video(path: str, start_s: float = 0.0, seconds: float = 0.0,
 
     if not frames:
         raise RuntimeError(
-            f"[Luna-H3-AssetLoader] No frames decoded from {os.path.basename(path)} "
+            f"[{who}] No frames decoded from {os.path.basename(path)} "
             f"at start {start_s:.2f}s. The start point may be past the end of the clip."
         )
 
     n = snap_frames_down(len(frames))
     if n == 0:
         raise RuntimeError(
-            f"[Luna-H3-AssetLoader] {os.path.basename(path)} gave only {len(frames)} "
+            f"[{who}] {os.path.basename(path)} gave only {len(frames)} "
             f"frame(s) at 24 fps; MiniMax H3 needs at least {FRAME_PLUS} "
             f"(~0.21 s). Widen the window or pick a longer clip."
         )
@@ -591,6 +579,7 @@ def decode_video(path: str, start_s: float = 0.0, seconds: float = 0.0,
         "start": start_s,
         "snapped_off": dropped,
         "name": os.path.basename(path),
+        "warning": _units.frames_warning(n, "h3"),
     }
 
 
@@ -644,25 +633,25 @@ def apply_window(waveform: torch.Tensor, plan: dict, when_short: str = "silence"
 # A music video is many shots of one song. Shot n starts where shot n-1 started plus
 # the shot length minus the overlap, so neighbouring shots share `overlap` frames of
 # song — the same frames the continuation carries over in the picture, so sound and
-# picture line up at every cut. Overlap is counted in frames at H3's 24 fps.
+# picture line up at every cut. Overlap is counted in frames at the shot's rate (H3 24, LTX 25).
 
-def _shot_step(shot_s: float, overlap_frames: int, fps: int = FPS) -> float:
+def _shot_step(shot_s: float, overlap_frames: int, fps: float = FPS) -> float:
     step = float(shot_s) - int(overlap_frames) / float(fps)
     if step <= 0:
         raise ValueError(
-            f"The overlap ({int(overlap_frames)} frames = {int(overlap_frames) / fps:.2f} s) is as "
+            f"The overlap ({int(overlap_frames)} frames = {int(overlap_frames) / float(fps):.2f} s) is as "
             f"long as the shot ({float(shot_s):.2f} s), so the song would never move on.")
     return step
 
 
 def song_shot_start(song_start_s: float, shot: int, shot_s: float, overlap_frames: int,
-                    fps: int = FPS) -> float:
+                    fps: float = FPS) -> float:
     """Where in the song shot `shot` (1-based) begins."""
     return float(song_start_s) + (max(1, int(shot)) - 1) * _shot_step(shot_s, overlap_frames, fps)
 
 
 def song_shot_count(total_s: float, song_start_s: float, shot_s: float, overlap_frames: int,
-                    fps: int = FPS) -> int:
+                    fps: float = FPS) -> int:
     """How many shots start inside the song. The last may run past the end and be filled."""
     if float(song_start_s) >= float(total_s):
         return 0
@@ -670,7 +659,7 @@ def song_shot_count(total_s: float, song_start_s: float, shot_s: float, overlap_
 
 
 def load_audio_window(path: str, start_s: float, seconds: float, when_short: str = "silence",
-                      describe_empty=None):
+                      describe_empty=None, who: str = WHO):
     """One sound file -> ({"waveform": [1, C, L], "sample_rate": sr}, info), exactly `seconds` long.
 
     `describe_empty(total_s)` words the error when the window starts past the end —
@@ -683,7 +672,7 @@ def load_audio_window(path: str, start_s: float, seconds: float, when_short: str
     if plan["take"] <= 0:
         total_s = waveform.shape[-1] / sr
         raise RuntimeError(describe_empty(total_s) if describe_empty else (
-            f"[Luna-H3-AssetLoader] The window on {os.path.basename(path)} contains no audio: "
+            f"[{who}] The window on {os.path.basename(path)} contains no audio: "
             f"it starts at {plan['start'] / sr:.2f}s but the file is only "
             f"{total_s:.2f}s long. Drag the window back into the song."
         ))
@@ -702,7 +691,7 @@ def load_audio_window(path: str, start_s: float, seconds: float, when_short: str
     }
 
 
-def load_audio(path: str, start_s: float = 0.0, seconds: float = 0.0):
+def load_audio(path: str, start_s: float = 0.0, seconds: float = 0.0, who: str = WHO):
     """One audio file -> ({"waveform": [1, C, L], "sample_rate": sr}, info dict).
 
     Trimming is plain sample slicing, the same arithmetic core's
@@ -723,7 +712,7 @@ def load_audio(path: str, start_s: float = 0.0, seconds: float = 0.0):
         end = total
     if start >= end:
         raise RuntimeError(
-            f"[Luna-H3-AssetLoader] The window on {os.path.basename(path)} contains no "
+            f"[{who}] The window on {os.path.basename(path)} contains no "
             f"audio: it starts at {start / sr:.2f}s but the file is only "
             f"{total / sr:.2f}s long."
         )

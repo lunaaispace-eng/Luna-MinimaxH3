@@ -22,23 +22,39 @@ Every node:
 ## Node tree
 
 - **Luna-H3-Canvas**: H3 resolution, frame count (`frames`) and fps from ratio and seconds; an optional `image` sets the aspect.
+  Frame count: whole frames at 24 fps, rounded up onto 17k+5 (5.0 s is 124); past 362 frames `info` warns and nothing is cut.
+  Every Luna node that makes an H3 frame count uses this one rule.
 - **Luna-H3-ConcatAVLatent**: Merges a video and an audio latent into H3's AV latent.
 - **Luna-H3-ReferenceLoader**: Every H3 reference in one node: 9 images, 3 clips, 3 audio.
 - **Luna-H3-AssetLoader**: Up to 9 ordered reference images, clips and a song; outputs include `video` and `frames`, and it runs empty. Each card shows its @ name (@image2, @video1, @audio1: the card number) and the tag H3 receives; `asset_brief` ends its references with the @ names line (`@image2 = <Picture 1>`), and `refs` carries the map.
-- **Luna-H3-RefsOut**: Unpacks the loader refs into every H3 reference socket; per-category on/off switches, a rebuilt `asset_brief` with the @ names line recounted for the switches, and the song as `audio`.
-- **Luna-H3-ShotList**: Scenes of different lengths over one song, one scene per run.
+  - `frames`: the shot length rounded up onto the Target's grid (H3 17k+5, LTX 8k+1); past 362 frames on H3 the brief warns and
+    nothing is cut. `fps` (after `image_9`): the rate of the clip on `video`. All nine `image_N` outputs are always there.
+  - Overlap: one row on the node (22, 39, 90, 141, 192 frames), with or without a song; it moves the song, the vocal stem and
+    the clip cards set to By shot number along a chain. Old workflows take sound card 1's overlap.
+  - Sound card 1 can carry a vocal stem, cut to the song's window: `vocals` (last output) for H3's lip-sync lock; `audio` stays
+    the full mix.
+  - `refs` also carries `roles`, the keyframe pictures (`keyframes`) and `vocals`.
+- **Luna-H3-RefsOut**: Unpacks the loader refs into every H3 reference socket; per-category on/off switches, a rebuilt `asset_brief` with the @ names line recounted for the switches, and the song as `audio`. `refs` (last output): the bundle as this node delivers it, filtered by the switches, for a writer's `refs`; the loaders' warnings stay in its brief.
+- **Luna-H3-ShotList**: Scenes of different lengths over one song, one scene per run. Lengths round up onto the grid (110f is
+  124); `overlap` is one of 0, 22, 39, 90, 141, 192 frames, another value snaps to the nearest with a warning in `info`; a
+  written start inside the scene before snaps its overlap and moves to match.
 - **Luna-H3-LoopStart**: Starts a scene loop from a JSON scene list.
-- **Luna-H3-LoopScene**: The current scene's settings, audio window, seeds and refs.
+- **Luna-H3-LoopScene**: The current scene's settings, audio window, seeds and refs. `seconds` (last output): render frames /
+  24. A scene past 362 render frames runs with a warning; a scene overlap off the list snaps; 22, or 0 on a carried scene,
+  stops the run.
 - **Luna-H3-LoopProfile**: Model, LoRAs, steps and shifts for the scene's profile.
 - **Luna-H3-GuideApply**: Adds the scene's guide keyframes to the positive conditioning.
 - **Luna-H3-GuideClip**: A CLIP that also shows the guide frames to the VLM.
-- **Luna-H3-LoopEnd**: Saves the scene's frames, audio and latent; runs the next scene.
+- **Luna-H3-LoopEnd**: Saves the scene's frames, audio and latent; runs the next scene. Its `fps` must be 24 (its trims are at
+  24 fps); any other value stops the run.
 - **Luna-H3-Sampler**: Two-resolution H3 audio+video sampling in one node (see below).
 - **Luna-H3-Chain**: Many clips in one queue on a Luna-MetaBatch (Luna-Media-Tools) or VHS Meta Batch Manager; clip number, seed and song start per clip.
 - **Luna-H3-ChainContinue**: Puts the end of the clip before at the start of this clip's latent, locked.
 - **Luna-H3-ChainRemember**: Saves the end of this clip, full size and pass 1, for the next clip.
 - **Luna-H3-ChainJoin**: Cuts the copied frames off and gathers the sound into one video. `clip_audio` is each clip's own
   sound, for a per-clip Luna-SaveVideo that keeps every clip on disk, so a stopped run can be continued and joined later.
+- The chain nodes take an `overlap` of 22, 39, 90, 141 or 192 frames; another value snaps to the nearest with a console
+  warning, one that snaps to 0 stops the run, and 22 needs `song_locked`.
 
 ## Replaces
 

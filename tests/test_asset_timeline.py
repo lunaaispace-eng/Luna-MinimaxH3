@@ -111,12 +111,32 @@ class TargetTests(unittest.TestCase):
 
 
 class ShotLengthTests(unittest.TestCase):
+    """One count per run (SPEC § 1): seconds at the shot's rate, rounded UP onto the target's grid, no 362 cut."""
+
     def test_wired_seconds_win(self):
         self.assertEqual(shot_frames(124 / 24, 200), 124)
 
     def test_unwired_uses_the_stored_length(self):
         self.assertEqual(shot_frames(None, 192), 192)
         self.assertEqual(shot_frames(0, 192), 192)
+
+    def test_seconds_round_up_onto_the_grid(self):
+        self.assertEqual(shot_frames(5.0, 200), 124)                 # 120 frames -> 124, not the old ungridded 120
+        self.assertEqual(shot_frames(16, 200), 396)                  # past 362: kept, not cut
+        self.assertEqual(shot_frames(5.0, 200, "ltx"), 129)          # 125 at 25 fps -> 8k+1
+        self.assertEqual(shot_frames(5.0, 200, "general", 30.0), 150)
+        self.assertEqual(shot_frames(5.0, 200, "general"), 120)      # no clip: 24 fps, no grid
+
+    def test_stored_length_rounds_up_onto_the_grid(self):
+        self.assertEqual(shot_frames(None, 380), 396)
+        self.assertEqual(shot_frames(None, 120, "ltx"), 121)
+        self.assertEqual(shot_frames(None, 120, "general"), 120)
+
+    def test_target_rate_and_grid_are_luna_units(self):
+        import luna_units
+        for t in ("h3", "ltx", "general", "", None):
+            self.assertEqual(target_grid(t), luna_units.grid_for(t))
+            self.assertEqual(target_fps(t, 29.97), luna_units.fps_for(t, 29.97))
 
 
 class ContinuationTests(unittest.TestCase):

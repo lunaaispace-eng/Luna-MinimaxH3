@@ -30,6 +30,11 @@ The @ names. When `refs` carries `naming` (luna_naming.make), the brief gets the
 recounted for the switches (luna_naming.remake), written in the minimax row. Without `naming`
 the brief is exactly what it was before the names existed.
 
+The brief is luna_naming.inventory of the loader's items, the one text the Asset Loader writes too, so
+the loaders' warnings (`items["extra"]`) stay whatever is switched off. The `refs` output, appended last,
+is the input bundle filtered the same way: what this node delivers, its items and naming remade, and its
+brief this node's asset_brief, so luna_naming.inventory(refs["items"], refs["naming"]) gives that brief.
+
 Socket names are 0-based to match H3's (`ref_image_0`), while the prompt tags in
 `asset_brief` are 1-based (`<Picture 1>`), because that is H3's own
 inconsistency — its Autogrow sockets count from 0 and its tokenizer counts from
@@ -39,7 +44,7 @@ disagree with the graph.
 
 from __future__ import annotations
 
-from .luna_naming import from_refs, names_line, put_names_line, remake
+from .luna_naming import from_refs, inventory, put_names_line, remake
 
 # Refs Out feeds MiniMax H3 and its inventory lines are MiniMax tags, so its @ names line is always written in
 # the minimax row, whatever row the loader named its items for (a Qwen-target Luna-ImageLoader included).
@@ -68,7 +73,8 @@ class LunaH3RefsOut:
         "then deliver nothing, which H3 skips, and `asset_brief` is rebuilt for what is left with "
         "the numbering recounted, the @ names line included. Wire this node's `asset_brief` to the prompt "
         "writer. `audio` is the "
-        "song, for the save node and the prompt writer."
+        "song, for the save node and the prompt writer. `refs` is the bundle as this node delivers it, "
+        "for a writer's refs."
     )
     CATEGORY = "Luna-MinimaxH3"
     FUNCTION = "unpack"
@@ -79,7 +85,8 @@ class LunaH3RefsOut:
         + ("AUDIO",) * MAX_VIDEOS
         + ("AUDIO",) * MAX_AUDIOS
         + ("STRING",)
-        + ("AUDIO",)     # LAST: saved links keep their slots
+        + ("AUDIO",)     # saved links keep their slots
+        + ("LUNA_H3_REFS",)   # LAST: appended after audio
     )
     RETURN_NAMES = (
         tuple(f"ref_image_{i}" for i in range(MAX_IMAGES))
@@ -88,6 +95,7 @@ class LunaH3RefsOut:
         + tuple(f"ref_audio_{i}" for i in range(MAX_AUDIOS))
         + ("asset_brief",)
         + ("audio",)
+        + ("refs",)
     )
     OUTPUT_TOOLTIPS = (
         tuple(
@@ -115,6 +123,10 @@ class LunaH3RefsOut:
             "from this line, so it matches what the ref sockets deliver.",
             "The song window (the loader's `audio`), when the song switch is on; else empty. For "
             "Luna-SaveVideo's audio and Luna-LLMPrompt's audio.",
+            "The refs bundle as this node delivers it: images and roles, videos, video_audios, audios, song and "
+            "vocals (the vocal stem follows the song switch) filtered by the switches, items and the @ names "
+            "remade for them, brief = this node's asset_brief; every other key (keyframes, width, height) kept. "
+            "For Luna-LLMPrompt's or Luna-LLMPromptAPI's refs, so the writer sees what H3 receives.",
         )
     )
 
@@ -169,7 +181,43 @@ class LunaH3RefsOut:
             + tuple(_slot(video_audios, i) for i in range(MAX_VIDEOS))
             + tuple(_slot(audios, i) for i in range(MAX_AUDIOS))
             + (brief, refs.get("song") if song else None)
+            + (switched_refs(refs, brief, pictures, clips, clip_sound, sounds, song),)
         )
+
+
+def switched_refs(refs, brief, pictures=True, clips=True, clip_sound=True, sounds=True, song=True) -> dict:
+    """The `refs` bundle after the switches: an off category is empty (a clip sound off keeps its clip's slot as
+    None, so videos and video_audios stay paired by index), the vocal stem goes with the song, `items` and
+    `naming` are remade for what is on, `brief` is this node's asset_brief; every other key is kept as it came."""
+    out = dict(refs)
+    n_videos = len(refs.get("videos") or []) if clips else 0
+    out["images"] = list(refs.get("images") or []) if pictures else []
+    out["roles"] = list(refs.get("roles") or []) if pictures else []
+    out["videos"] = list(refs.get("videos") or []) if clips else []
+    out["video_audios"] = (list(refs.get("video_audios") or []) if clip_sound else [None] * n_videos) if clips else []
+    out["audios"] = list(refs.get("audios") or []) if sounds else []
+    out["song"] = refs.get("song") if song else None
+    out["vocals"] = refs.get("vocals") if song else None
+    items = refs.get("items")
+    if isinstance(items, dict):
+        it = dict(items)
+        if not pictures:
+            it["images"] = []
+            it.pop("picture_warning", None)
+        if not clips:
+            it["videos"], it["video_audios"] = [], []
+        elif not clip_sound:
+            it["video_audios"] = [False] * len(items.get("video_audios") or [])
+        if not sounds:
+            it["audios"] = []
+        if not song:
+            it["song"], it["vocals"] = "", ""
+        out["items"] = it
+    naming = _switched_naming(refs, pictures, clips, clip_sound, sounds)
+    if naming is not None or "naming" in refs:
+        out["naming"] = naming
+    out["brief"] = brief
+    return out
 
 
 def build_brief(refs, pictures=True, clips=True, clip_sound=True, sounds=True, song=True) -> str:
@@ -184,35 +232,8 @@ def build_brief(refs, pictures=True, clips=True, clip_sound=True, sounds=True, s
     if not isinstance(items, dict):
         brief = _fallback_brief(refs, pictures, clips, clip_sound, sounds, song)
         return put_names_line(brief, at_naming, ROW) if at_naming else brief
-    images = (items.get("images") or []) if pictures else []
-    videos = (items.get("videos") or []) if clips else []
-    v_audio = items.get("video_audios") or []
-    standalone = (items.get("audios") or []) if sounds else []
-    parts = []
-    if images:
-        parts.append("Reference images, in order: "
-                     + "; ".join(f"<Picture {i}> = {d}" for i, d in enumerate(images, 1)) + ".")
-        if items.get("picture_warning"):
-            parts.append(items["picture_warning"])
-    n_audio = 0
-    for k, desc in enumerate(videos, 1):
-        if clip_sound and k - 1 < len(v_audio) and v_audio[k - 1]:
-            n_audio += 1
-            parts.append(f"<Audio {n_audio}> = the soundtrack of <Video {k}>.")
-        parts.append(f"<Video {k}> = {desc}.")
-    for desc in standalone:
-        n_audio += 1
-        parts.append(f"<Audio {n_audio}> = {desc}.")
-    if standalone and not images and not videos:
-        parts.append("WARNING: MiniMax H3 does not accept reference sounds without a reference "
-                     "picture or clip.")
-    at_line = names_line(at_naming, ROW) if at_naming else ""
-    if at_line:
-        parts.append(at_line)
-    if song and items.get("song"):
-        parts.append(items["song"])
-    parts += [x for x in (items.get("extra") or []) if x]
-    return " ".join(parts)
+    return inventory(items, at_naming, ROW, pictures=pictures, clips=clips, clip_sound=clip_sound, sounds=sounds,
+                     song=song)
 
 
 def _switched_naming(refs, pictures, clips, clip_sound, sounds):

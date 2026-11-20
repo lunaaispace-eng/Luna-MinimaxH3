@@ -247,6 +247,12 @@ class NamesLineTests(unittest.TestCase):
         self.assertEqual(ln.mismatch("minimax", picked["row"]), "")
         self.assertIsNone(ln.pick(line, None)["row"])
 
+    def test_drop_names_line(self):
+        brief = "Reference images: <Picture 1>. " + ln.names_line(self.naming) + " End."
+        self.assertEqual(ln.drop_names_line(brief), "Reference images: <Picture 1>.  End.")
+        self.assertEqual(ln.drop_names_line("no line"), "no line")
+        self.assertEqual(ln.drop_names_line(None), "")
+
     def test_put_names_line_renders_in_the_model_row(self):
         brief = "Reference images: <Picture 1>. " + ln.names_line(self.naming) + " End."
         out = ln.put_names_line(brief, ln.read_names_line(brief), "qwen")
@@ -256,6 +262,94 @@ class NamesLineTests(unittest.TestCase):
         self.assertEqual(ln.put_names_line("Image 1 (edit base, 64x64)", self.naming, "cloud").splitlines()[1],
                          ln.names_line(self.naming, "cloud"))
         self.assertEqual(ln.put_names_line("same", None), "same")
+
+
+class InventoryTests(unittest.TestCase):
+    def setUp(self):
+        self.items = {"images": ["1:1", "16:9 [resized from 1920x1080]"], "picture_warning": "WARNING: aspect.",
+                      "videos": ["5.17 s dance", "4.00 s walk; it has no sound"], "video_audios": [True, False],
+                      "audios": ["rain"], "song": "Song: a.wav 0:10-0:15 (5.17 s).",
+                      "vocals": "Vocal stem: a_vocals.wav, the same window, for the lip-sync lock.",
+                      "extra": ["On the shot (124 frames, 5.17 s): picture 3 at frame 0."]}
+        self.naming = ln.make("minimax", ["ref", "ref", "key"], [{"sent": True, "sound": True},
+                                                                 {"sent": True, "sound": False}], [False, True])
+
+    def test_everything_on(self):
+        out = ln.inventory(self.items, self.naming)
+        self.assertEqual(out, (
+            "Reference images, in order: <Picture 1> = 1:1; <Picture 2> = 16:9 [resized from 1920x1080]. "
+            "WARNING: aspect. <Audio 1> = the soundtrack of <Video 1>. <Video 1> = 5.17 s dance. "
+            "<Video 2> = 4.00 s walk; it has no sound. <Audio 2> = rain. " + ln.names_line(self.naming) + " "
+            "Song: a.wav 0:10-0:15 (5.17 s). Vocal stem: a_vocals.wav, the same window, for the lip-sync lock. "
+            "On the shot (124 frames, 5.17 s): picture 3 at frame 0."))
+
+    def test_switches_recount_what_follows(self):
+        out = ln.inventory(self.items, None, clip_sound=False)
+        self.assertNotIn("soundtrack", out)
+        self.assertIn("<Audio 1> = rain.", out)
+        out = ln.inventory(self.items, None, pictures=False, song=False)
+        self.assertNotIn("Picture", out)
+        self.assertNotIn("WARNING: aspect.", out)       # the picture warning goes with the pictures
+        self.assertNotIn("Song:", out)
+        self.assertNotIn("Vocal stem", out)             # the vocal stem follows the song switch
+
+    def test_a_reader_without_sound_keeps_the_numbers(self):
+        out = ln.inventory(self.items, self.naming, hear=False)
+        self.assertNotIn("<Audio", out)                  # neither in the item lines nor in the names line
+        self.assertNotIn("Song:", out)
+        self.assertNotIn("Vocal stem", out)
+        self.assertIn("<Video 1> = 5.17 s dance. <Video 2>", out)
+        self.assertIn("@audio2 = not sent", out)
+        self.assertIn("@image1 = <Picture 1>", out)
+        self.assertIn("@video2 = <Video 2>", out)
+        self.assertIn("On the shot", out)
+
+    def test_without_sound_keeps_pictures_and_clips(self):
+        deaf = ln.without_sound(self.naming)
+        self.assertEqual(deaf["map"]["@video1"], ("video", 1))
+        self.assertEqual(deaf["map"]["@image2"], ("image", 2))
+        self.assertIsNone(deaf["map"]["@audio2"])
+        read = ln.without_sound(ln.read_names_line(ln.names_line(self.naming)))   # a read naming has no cards
+        self.assertIsNone(read["map"]["@audio2"])
+        self.assertEqual(read["map"]["@video1"], ("video", 1))
+        self.assertIsNone(ln.without_sound(None))
+        out, warnings = ln.replace("Sing to @audio2.", deaf)
+        self.assertEqual(out, "Sing to the sound.")
+        self.assertIn("takes none", warnings[0])
+
+    def test_sounds_alone_warn_and_nothing_gives_empty(self):
+        out = ln.inventory({"audios": ["rain"]})
+        self.assertEqual(out, "<Audio 1> = rain. WARNING: MiniMax H3 does not accept reference sounds without a "
+                              "reference picture or clip.")
+        self.assertEqual(ln.inventory({}), "")
+        self.assertEqual(ln.inventory(None), "")
+
+    def test_names_line_in_the_given_row(self):
+        out = ln.inventory({"images": ["1:1"]}, ln.make("minimax", ["ref"]), row="qwen")
+        self.assertTrue(out.endswith("@ names: @image1 = <image1>."))
+
+
+class PlacedTests(unittest.TestCase):
+    def setUp(self):
+        self.naming = ln.make("cloud", ["ref", "ref", "ref", "ref"], [{"sent": True}], [])
+
+    def test_dropped_items_are_not_sent(self):
+        cut = ln.placed(self.naming, keep=3)
+        self.assertEqual(cut["map"]["@image3"], ("image", 3))
+        self.assertIsNone(cut["map"]["@image4"])
+        out, warnings = ln.replace("@image4 and @image1", cut, row="cloud")
+        self.assertEqual(out, "the picture and Image 1")
+        self.assertIn("not sent", warnings[0])
+
+    def test_items_sent_ahead_move_the_numbers_up(self):
+        moved = ln.placed(self.naming, before=1)
+        self.assertEqual(ln.replace("@image1", moved, row="grok")[0], "<IMAGE_1>")   # the first frame is <IMAGE_0>
+        self.assertEqual(moved["map"]["@video1"], ("video", 1))                       # another kind: unchanged
+        both = ln.placed(self.naming, before=1, keep=2)
+        self.assertEqual(both["map"]["@image2"], ("image", 3))
+        self.assertIsNone(both["map"]["@image3"])
+        self.assertIsNone(ln.placed(None))
+        self.assertIs(ln.placed(self.naming)["cards"], None)
 
 
 class CopyTests(unittest.TestCase):

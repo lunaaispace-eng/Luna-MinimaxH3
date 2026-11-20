@@ -1,21 +1,18 @@
-// Luna-H3-AssetLoader — ordered reference cards, and only the outputs you asked for.
+// Luna-H3-AssetLoader — ordered reference cards and every output, always.
 //
 // Two jobs in one file:
-//   1. show N numbered outputs out of the nine Python always declares
+//   1. keep the node's outputs exactly Python's: the ten fixed outputs, image_1..image_9
+//      whatever the number of picture cards, then fps and vocals (SPEC § 2), and bring
+//      older saves to that order without moving a saved link (the output migration block)
 //   2. a card UI that owns the image_paths field: upload, reorder, remove
 //
 // On (1): ComfyUI has no dynamic outputs. Autogrow is input-only
 // (comfy_api/latest/_io.py — `class Autogrow(ComfyTypeI)`), and RETURN_TYPES is a
-// fixed class attribute the backend type-checks links against. So Python declares
-// all nine and this hides the rest. Slot indices never move, so a link to image_3
-// survives the count changing; hidden slots keep their links rather than dropping
-// them, and a wired-but-hidden slot is coloured so it cannot go unnoticed.
+// fixed class attribute; the frontend sends each link's own slot number with the
+// prompt and the backend reads that index of the result. So no slot may come or go:
+// image_count only labels the image sockets past it as spare.
 //
-// The count-widget-drives-the-slots idea is the same one KJNodes uses for its
-// *Multi nodes, written here from the LiteGraph API rather than copied — KJNodes
-// is GPL-3.0 and this pack is Apache-2.0. Their version needs a button pressed;
-// this one applies on every change, so there is no button at all. The upload flow
-// uses ComfyUI's stock /upload/image endpoint, the same one Load Image posts to.
+// The upload flow uses ComfyUI's stock /upload/image endpoint, the same one Load Image posts to.
 
 import { app } from "../../scripts/app.js";
 import { LUNA } from "./luna_theme.mjs";
@@ -351,17 +348,19 @@ const VIDEO_EXT = /\.(mp4|mov|mkv|webm|avi|m4v|mpg|mpeg|wmv|flv)$/i;
 const isVideoFile = (f) => (f.type || "").startsWith("video/") || VIDEO_EXT.test(f.name || "");
 const MEMORY_CAP_GB = 6;          // asset_loader.py MEMORY_CAP; the run refuses above it
 const NEW_VIDEO = { start: 0, frames: 124, fps: "target", count: "target", size: "canvas", fit: "crop",
-                    nth: 1, sound: "keep", precision: "fp16" };
+                    nth: 1, sound: "keep", precision: "fp16", position: "free", shot: 1 };
 
 // Clip facts (size, fps, length, sound) come from the server: the browser's
 // <video> element does not expose a frame rate.
 const _mediaInfo = new Map();
 const _hasSound = new Map();   // file -> does it have a sound track (filled as info arrives)
+const _mediaFps = new Map();   // file -> its frame rate (filled as info arrives), for the shot rate (shotRate)
 function mediaInfo(file) {
     if (!_mediaInfo.has(file)) {
         const p = fetch(`/lunasave/media-info?file=${encodeURIComponent(file)}`)
             .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status))));
-        p.then((mi) => _hasSound.set(file, !!mi.audio)).catch(() => _mediaInfo.delete(file));
+        p.then((mi) => { _hasSound.set(file, !!mi.audio); if (Number(mi.fps) > 0) _mediaFps.set(file, Number(mi.fps)); })
+            .catch(() => _mediaInfo.delete(file));
         _mediaInfo.set(file, p);
     }
     return _mediaInfo.get(file);
@@ -377,6 +376,109 @@ const clipRole = (c) => (c.role === "guide" ? "guide" : "ref");
 // locked — a later sound asked to lock is a guide.
 const soundRole = (c, j) => (c.role === "lock" ? (j === 0 ? "lock" : "guide")
     : ["guide", "ref"].includes(c.role) ? c.role : j === 0 ? "lock" : "ref");
+
+// --- frame rule: begin (pure; tests\test_asset_frames.mjs runs this block against luna_units.py) ---
+// Mirror of luna_units.py (Luna-MinimaxH3 SPEC § 1, § 2): every count made for a shot rounds UP onto the target's
+// grid (H3 17k+5, LTX 8k+1, General any whole count); above 362 on H3 a warning, never a cut. A length in seconds
+// becomes whole frames first (half up). A cut to what a file holds rounds DOWN. One overlap list on every node.
+const H3_FPS = 24;
+const TRAINED_MAX = 362;
+const GRIDS = { h3: [17, 5], ltx: [8, 1], free: [1, 0] };
+const TARGET_FPS = { h3: 24, ltx: 25 };
+const OVERLAPS = [0, 22, 39, 90, 141, 192];
+const OVERLAP_ROW = [22, 39, 90, 141, 192];   // the node face's row; 0 is the first clip of a chain
+const DEFAULT_OVERLAP = 22;
+const gridSpec = (grid) => GRIDS[grid] || GRIDS.free;
+const mod = (a, b) => ((a % b) + b) % b;   // Python's %, never negative
+const firstFrames = (grid) => { const [, p] = gridSpec(grid); return p > 0 ? p : 1; };
+function framesUp(n, grid = "h3") {
+    const [step, phase] = gridSpec(grid);
+    const f = Math.max(Math.ceil(Number(n) - 1e-9), firstFrames(grid));
+    return f + mod(phase - f, step);
+}
+function framesDown(n, grid = "h3") {
+    const [step, phase] = gridSpec(grid);
+    const f = Math.floor(Number(n) + 1e-9);
+    return f < firstFrames(grid) ? 0 : f - mod(f - phase, step);
+}
+const wholeFrames = (seconds, fps = H3_FPS) => Math.floor(Number(seconds) * Number(fps) + 0.5);
+const framesFor = (seconds, fps = H3_FPS, grid = "h3") => framesUp(wholeFrames(seconds, fps), grid);
+const framesWarning = (frames, grid = "h3") => (grid === "h3" && Math.trunc(frames) > TRAINED_MAX
+    ? `${Math.trunc(frames)} frames is past the ${TRAINED_MAX} frames H3 was trained on; it is kept, not cut.` : "");
+const gridFor = (target) => ({ h3: "h3", ltx: "ltx" })[String(target ?? "").trim().toLowerCase()] || "free";
+function fpsFor(target, source) {
+    const fixed = TARGET_FPS[String(target ?? "").trim().toLowerCase()];
+    if (fixed) return fixed;
+    const r = Number(source);
+    return Number.isFinite(r) && r > 0 && source !== null && source !== "" ? r : H3_FPS;
+}
+// [value on OVERLAPS, warning or ""]; a tie takes the smaller value.
+function snapOverlap(value) {
+    const v = Number(value);
+    if (!Number.isFinite(v)) return [DEFAULT_OVERLAP, `Overlap ${String(value)} is not a number of frames; ${DEFAULT_OVERLAP} is used.`];
+    let best = OVERLAPS[0];
+    for (const o of OVERLAPS) if (Math.abs(o - v) < Math.abs(best - v)) best = o;
+    return [best, best === v ? "" : `Overlap ${v} is not on the list ${OVERLAPS.join(", ")} frames; ${best} is used.`];
+}
+// The node's overlap (asset_loader._overlap_setting): settings.overlap when set, else sound card 1's (saves made
+// before the node-wide row), else 22; snapped onto the list. m: readMedia's shape.
+function nodeOverlap(m) {
+    const set = m?.settings?.overlap;
+    const card = (m?.audio || []).find((c) => c && c.file);
+    const raw = set ?? (card && card.overlap != null ? card.overlap : DEFAULT_OVERLAP);
+    return snapOverlap(raw);
+}
+// media_state text -> the cards and settings the editor works on (readMedia).
+function parseMedia(text) {
+    try {
+        const m = JSON.parse(String(text || "") || "{}");
+        return {
+            audio: Array.isArray(m.audio) ? m.audio.filter((c) => c && c.file) : [],
+            video: Array.isArray(m.video) ? m.video.filter((c) => c && c.file) : [],
+            pictures: Array.isArray(m.pictures) ? m.pictures.map((p) => p || {}) : [],
+            shot: m.shot && Number(m.shot.frames) > 0 ? { frames: Number(m.shot.frames) } : null,
+            settings: migrateOverlap(m.settings && typeof m.settings === "object" ? m.settings : {}, m.audio),
+        };
+    } catch { return { audio: [], video: [], pictures: [], shot: null, settings: {} }; }
+}
+// A save from before the node-wide overlap row: settings.overlap takes sound card 1's overlap (22 when the card has
+// none) on read, so the next write keeps it whatever later happens to the song. Off the list is kept as it is; the
+// run and the row snap it with a warning (asset_loader._overlap_setting reads the same).
+function migrateOverlap(settings, audio) {
+    if (settings.overlap != null) return settings;
+    const card = (Array.isArray(audio) ? audio : []).find((c) => c && c.file);
+    return card ? { ...settings, overlap: card.overlap ?? DEFAULT_OVERLAP } : settings;
+}
+// The editor's state -> media_state text (writeMedia); "" when there is nothing to keep.
+function mediaJSON(m) {
+    const out = {};
+    if (m.audio?.length) out.audio = m.audio;
+    if (m.video?.length) out.video = m.video;
+    // Picture roles only matter once one of them is not a plain reference.
+    if (m.pictures?.some((p) => p?.role === "key")) out.pictures = m.pictures;
+    if (m.shot?.frames) out.shot = m.shot;
+    // A "continuation" key from an older save is dropped here: the card is gone and the backend ignores it.
+    if (m.settings && Object.keys(m.settings).length) out.settings = m.settings;
+    return Object.keys(out).length ? JSON.stringify(out) : "";
+}
+// The length of a sound card's window in the editor, in seconds (asset_loader._song / _sounds). shot: shotLen()'s
+// {seconds, rate, grid}. Sound card 1, the song, is always the shot; a reference or guide sound (cards 2-3) keeps its
+// own Duration, at most the shot (0 = the shot).
+function soundWindow(card, index, shot) {
+    if (index === 0) return shot.seconds;
+    const d = Number(card?.duration) || 0;
+    return d > 0 ? Math.min(d, shot.seconds) : shot.seconds;
+}
+// A typed or dragged length for a sound card -> { shotFrames (the node's new shot length, or null), duration }.
+// Only the song's length sets the shot length (rounded UP onto the grid); cards 2-3 change only their own Duration.
+function soundLengthPatch(index, seconds, shot) {
+    if (index === 0) {
+        const frames = Math.max(1, framesFor(seconds, shot.rate, shot.grid));
+        return { shotFrames: frames, duration: frames / shot.rate };
+    }
+    return { shotFrames: null, duration: Math.min(Number(seconds), shot.seconds) };
+}
+// --- frame rule: end ---
 
 // --- naming rule: begin (pure; tests\test_asset_naming.mjs runs this block outside ComfyUI) ---
 // Mirror of asset_timeline.h3_tags, which is luna_naming.assign / tag in the minimax row (the Asset
@@ -521,22 +623,8 @@ function openSettings(node) {
     _sp = { el, node, stop() { alive = false; cancelAnimationFrame(raf); document.removeEventListener("keydown", onEsc, true); } };
 }
 
-// H3 clip lengths are 17k+5 frames; step to the previous / next one.
-function stepH3Frames(n, dir) {
-    let f = Math.max(5, Math.round(n));
-    if (dir > 0) { f += 1; while (f % 17 !== 5) f += 1; }
-    else { f -= 1; while (f > 5 && f % 17 !== 5) f -= 1; f = Math.max(5, f); }
-    return f;
-}
-// Capped at 362 like media_io.snap_frames_nearest: the top of the trained range.
-const nearestH3Frames = (n) => Math.min(362, Math.round(snapH3Seconds(n / H3_FPS) * H3_FPS));
-
-// H3's frame grid as Luna-H3-Canvas applies it (h3_canvas.py align_frames):
-// round(duration x 24), then UP to the next 17k+5.
-const canvasSeconds = (d) => {
-    const n = Math.max(5, Math.round(Number(d) * 24));
-    return (n + (((5 - n) % 17) + 17) % 17) / 24;
-};
+// Luna-H3-Canvas's seconds from its duration: the shared rule, whole frames at 24 then UP onto 17k+5.
+const canvasSeconds = (d) => framesFor(Number(d), H3_FPS, "h3") / H3_FPS;
 
 // What an output on the node at the other end of a wire carries, when the frontend
 // can know it before a run: a node that says so itself (Luna-H3-ShotList's
@@ -578,22 +666,10 @@ function wiredSignature(node) {
     }).join("|");
 }
 const MAX_SOUNDS = 3;
-const H3_FPS = 24;
 const AUDIO_EXT = /\.(wav|mp3|flac|ogg|opus|m4a|aac|wma|aiff?)$/i;
 const isAudioFile = (f) => (f.type || "").startsWith("audio/") || AUDIO_EXT.test(f.name || "");
 
-function readMedia(node) {
-    try {
-        const m = JSON.parse(String(widget(node, MEDIA_WIDGET)?.value || "") || "{}");
-        return {
-            audio: Array.isArray(m.audio) ? m.audio.filter((c) => c && c.file) : [],
-            video: Array.isArray(m.video) ? m.video.filter((c) => c && c.file) : [],
-            pictures: Array.isArray(m.pictures) ? m.pictures.map((p) => p || {}) : [],
-            shot: m.shot && Number(m.shot.frames) > 0 ? { frames: Number(m.shot.frames) } : null,
-            settings: m.settings && typeof m.settings === "object" ? m.settings : {},
-        };
-    } catch { return { audio: [], video: [], pictures: [], shot: null, settings: {} }; }
-}
+const readMedia = (node) => parseMedia(widget(node, MEDIA_WIDGET)?.value);
 
 /* ---------------------------------------------------------------- settings */
 
@@ -612,49 +688,37 @@ const settingsOf = (m) => {
 // What each target means — mirrors asset_timeline.target_fps / target_grid.
 const TARGETS = {
     h3: { label: "MiniMax H3", fps: 24, grid: "h3", step: 17, gridText: "H3 grid (17k+5)",
-          note: "24 fps. Clips 17k+5 frames. Pictures and clips anchor at any frame; a sound runs from its frame to the end." },
+          note: "24 fps. Frame counts round up onto 17k+5; past 362 a warning, nothing cut. Pictures and clips anchor at any frame; a sound runs from its frame to the end." },
     ltx: { label: "LTX", fps: 25, grid: "ltx", step: 8, gridText: "LTX grid (8k+1)",
-           note: "25 fps. Clips 8k+1 frames, anchored at frame 0 or 8k+1 (LTXVAddGuide moves anything else)." },
+           note: "25 fps. Frame counts round up onto 8k+1; clips anchored at frame 0 or 8k+1 (LTXVAddGuide moves anything else)." },
     general: { label: "General", fps: null, grid: "free", step: 24, gridText: "Free",
-               note: "Files as they are: the source's own frame rate and any length." },
+               note: "Files as they are: clip V1's frame rate (24 with no clip) and any length." },
 };
 const targetOf = (m) => TARGETS[settingsOf(m).target] || TARGETS.h3;
 const PREVIEW_SIZES = { S: 120, M: PREVIEW_H, L: 260 };
 const previewH = (node) => PREVIEW_SIZES[settingsOf(readMedia(node)).node.preview] || PREVIEW_H;
-// Nearest frame count on a grid, and one grid step up or down.
-function gridFrames(n, grid) {
-    n = Math.max(1, Math.round(n));
-    if (grid === "h3") return nearestH3Frames(n);
-    if (grid === "ltx") return Math.max(1, Math.round((n - 1) / 8) * 8 + 1);
-    return n;
-}
+// A frame count on a grid, rounded UP (media_io.grid_frames; no 362 cut), and one grid step up or down.
+const gridFrames = (n, grid) => framesUp(Math.max(1, Math.trunc(Number(n) || 1)), grid);
 function stepGrid(n, dir, grid) {
-    if (grid === "h3") return stepH3Frames(n, dir);
-    if (grid === "ltx") return Math.max(1, gridFrames(n, "ltx") + 8 * dir);
-    return Math.max(1, Math.round(n) + dir);
+    const f = Math.trunc(Number(n) || 1);
+    return dir > 0 ? framesUp(f + 1, grid) : Math.max(firstFrames(grid), framesDown(f - 1, grid));
+}
+// The shot's frame rate (asset_loader: luna_units.fps_for of clip card V1's delivered rate): H3 24, LTX 25,
+// General clip V1's rate after its fps choice and every-Nth, 24 with no clip or before its facts are in.
+function shotRate(m) {
+    const target = settingsOf(m).target, c = m.video?.[0];
+    if (!c) return fpsFor(target, null);
+    const src = _mediaFps.get(c.file);
+    const decode = (c.fps ?? "target") === "target" ? fpsFor(target, src) : c.fps === "source" ? src : Number(c.fps);
+    return fpsFor(target, decode ? decode / Math.max(1, Number(c.nth) || 1) : null);
 }
 
 function writeMedia(node, m) {
     const w = widget(node, MEDIA_WIDGET);
     if (!w) return;
-    const out = {};
-    if (m.audio?.length) out.audio = m.audio;
-    if (m.video?.length) out.video = m.video;
-    // Picture roles only matter once one of them is not a plain reference.
-    if (m.pictures?.some((p) => p?.role === "key")) out.pictures = m.pictures;
-    if (m.shot?.frames) out.shot = m.shot;
-    // A "continuation" key from an older save is dropped here: the card is gone and the backend ignores it.
-    if (m.settings && Object.keys(m.settings).length) out.settings = m.settings;
-    w.value = Object.keys(out).length ? JSON.stringify(out) : "";
+    w.value = mediaJSON(m);
     w.callback?.(w.value);
     node.graph?.setDirtyCanvas(true, true);
-}
-
-// MiniMax H3 shot lengths: 5, 22, 39 … frames (17k+5) at 24 fps, nearest first.
-function snapH3Seconds(sec) {
-    const n = Math.max(5, Math.round(sec * H3_FPS));
-    const up = n + ((5 - (n % 17)) % 17 + 17) % 17, down = up - 17;
-    return (down >= 5 && n - down < up - n ? down : up) / H3_FPS;
 }
 
 const clock = (t) => {
@@ -852,19 +916,21 @@ async function uploadFiles(files) {
 
 /* --------------------------------------------------------------- outputs */
 
-// The ten fixed outputs (images, width, height, asset_brief, audio, refs,
-// timeline, video, frames, overlap) occupy slots 0-9 and are never touched. Only the
-// trailing image_N slots grow and shrink.
-//
-// `slot.hidden` does NOT work: setting it leaves the flag on the object but the
-// frontend (1.48.x) still draws every output. Verified in the browser, which is
-// why this adds and removes real slots instead.
+// --- output migration: begin (pure; tests\test_asset_outputs.mjs runs this block outside ComfyUI) ---
+// Every output, always (Luna-MinimaxH3 SPEC § 2): the ten fixed outputs at slots 0-9, image_1..image_9 at 10-18
+// whatever the number of picture cards, then fps (19) and vocals (20). ComfyUI sends each link's frontend slot
+// number with the prompt (graphToPrompt: [origin_id, origin_slot]) and the backend reads that index of the returned
+// tuple, so the slots must be the Python order exactly and none may come or go.
+const MIGRATED_NODE = "Luna-H3-AssetLoader";
 const FIXED_OUTS = [["images", "IMAGE"], ["width", "INT"], ["height", "INT"], ["asset_brief", "STRING"],
                     ["audio", "AUDIO"], ["refs", "LUNA_H3_REFS"], ["timeline", "LUNA_TIMELINE"],
                     ["video", "IMAGE"], ["frames", "INT"], ["overlap", "INT"]];
 const FIXED = FIXED_OUTS.length;
+const IMAGE_OUTS = Array.from({ length: 9 }, (_, i) => [`image_${i + 1}`, "IMAGE"]);
+const TAIL_OUTS = [["fps", "FLOAT"], ["vocals", "AUDIO"]];
+const ALL_OUTS = [...FIXED_OUTS, ...IMAGE_OUTS, ...TAIL_OUTS];
 
-// The migration is one rule, not one step per release: a saved node keeps the
+// The fixed-prefix rule, one rule, not one step per release: a saved node keeps the
 // fixed outputs it was saved with (everything before its image_1) and gets every
 // fixed output it lacks inserted before image_1, at that output's own index in
 // FIXED_OUTS. image_1 then sits at FIXED whatever the save: old saves (4 fixed,
@@ -876,27 +942,38 @@ const savedFixedCount = (outputs) => {
     const k = Array.isArray(outputs) ? outputs.findIndex((o) => o?.name === "image_1") : -1;
     return k >= 0 && k < FIXED ? k : -1;
 };
+const outSlot = ([name, type]) => ({ name, localized_name: name, type, links: null });
 
 // Frontend 1.55.17 overwrites a saved node's output names BY POSITION from the
 // current definition and keeps every link on its slot number, so left alone an
 // old image_1 wire lands on `audio` (or `video`) without a word (seen in the S0
 // spike, 2026-10-16). onConfigure is too late for that; this rewrites the raw
-// workflow JSON before the graph is configured: the missing fixed slots go in
-// before image_1 and every link leaving image_1 or higher of an old
-// Luna-H3-AssetLoader moves up by the number inserted. Root graph and subgraph
-// definitions alike. A migrated save has image_1 at slot 10, so it is never moved twice.
+// workflow JSON before the graph is configured, root graph and subgraph definitions alike:
+//   1. the fixed-prefix rule above (an old save's links leaving image_1 or higher move up);
+//   2. then every slot the save lacks is APPENDED: the image_N it did not show (a save made while the node shrank
+//      to image_1..3 gets image_4..9), then fps and vocals. Appending moves no link.
+// A migrated save has all 21 slots, so it is never changed twice. Returns what it did, one line per change.
 function migrateWorkflowJSON(data) {
     const moved = [];
     const fixGraph = (g, where) => {
         if (!Array.isArray(g?.nodes)) return;
         const old = new Map();   // node id -> [first moved slot, slots inserted]
         for (const n of g.nodes) {
-            if (n?.type !== NODE) continue;
+            if (n?.type !== MIGRATED_NODE) continue;
+            if (!Array.isArray(n.outputs)) n.outputs = [];
             const k = savedFixedCount(n.outputs);
-            if (k < 0) continue;
-            const missing = FIXED_OUTS.slice(k);
-            old.set(n.id, [k, missing.length]);
-            n.outputs.splice(k, 0, ...missing.map(([name, type]) => ({ name, localized_name: name, type, links: null })));
+            if (k >= 0) {
+                const missing = FIXED_OUTS.slice(k);
+                old.set(n.id, [k, missing.length]);
+                n.outputs.splice(k, 0, ...missing.map(outSlot));
+            }
+            const prefix = n.outputs.every((o, i) => o?.name === ALL_OUTS[i]?.[0]);
+            if (!prefix) { moved.push(`${where} node ${n.id}: outputs not in the known order, left as saved`); continue; }
+            if (n.outputs.length < ALL_OUTS.length) {
+                const tail = ALL_OUTS.slice(n.outputs.length);
+                n.outputs.push(...tail.map(outSlot));
+                moved.push(`${where} node ${n.id}: appended ${tail.map(([name]) => name).join(", ")}`);
+            }
         }
         if (!old.size) return;
         // Floating links (a wire dragged to a reroute with nothing after it) carry an
@@ -918,6 +995,7 @@ function migrateWorkflowJSON(data) {
     for (const sg of Array.isArray(data?.subgraphs) ? data.subgraphs : []) fixGraph(sg, `subgraph ${sg.id}`);
     return moved;
 }
+// --- output migration: end ---
 
 // Paste and subgraph-blueprint insertion go through LGraphCanvas._deserializeItems,
 // never loadGraphData, so beforeConfigureGraph never sees them (review,
@@ -931,11 +1009,21 @@ function patchDeserialize() {
     proto._deserializeItems = function (items, options) {
         try {
             const moved = migrateWorkflowJSON(items);
-            if (moved.length) console.info("[Luna-H3-AssetLoader] updated pasted pre-v3 Luna-H3-AssetLoader wires:", moved);
+            if (moved.length) console.info("[Luna-H3-AssetLoader] updated pasted Luna-H3-AssetLoader outputs:", moved);
         } catch (e) { console.warn("[Luna-H3-AssetLoader] paste migration skipped:", e); }
         return orig.call(this, items, options);
     };
     proto._lunaAssetMigrates = true;
+}
+
+// The live node always ends with every output: slots it lacks (a node configured from an older form) are APPENDED
+// in ALL_OUTS order. Never removes a slot or moves a link.
+function ensureOutputs(node) {
+    if (!node.outputs) return;
+    while (node.outputs.length < ALL_OUTS.length) {
+        const [name, type] = ALL_OUTS[node.outputs.length];
+        node.addOutput(name, type);
+    }
 }
 
 // Paste and subgraph-blueprint insertion never call loadGraphData, so the JSON
@@ -954,13 +1042,8 @@ function migrateLiveNode(node, from) {
         if (i < from) return;
         for (const id of o.links || []) { const l = getLink(id); if (l && l.origin_id === node.id) moves.push([i, id, l]); }
     });
+    ensureOutputs(node);   // every slot exists before the links move up
     if (!moves.length) return 0;
-    const need = Math.max(...moves.map(([i]) => i)) + shift;
-    const cw = widget(node, COUNT_WIDGET);
-    if (cw && node.outputs.length <= need) {
-        cw.value = Math.min(MAX, Math.max(Number(cw.value) || 1, need - FIXED + 1));
-        applyCount(node);
-    }
     for (const [i] of moves) node.outputs[i].links = [];
     for (const [i, id, l] of moves) {
         const to = i + shift;
@@ -972,66 +1055,47 @@ function migrateLiveNode(node, from) {
     return moves.length;
 }
 
-// Returns what happened: { target, shown, blocked }. `blocked` is the 1-based
-// image_N that stopped a shrink because it is wired, 0 if nothing stopped it.
-// Callers report it: a refusal that says nothing looks exactly like a bug, which
-// is the mistake this node already made once.
+// image_count no longer adds or removes sockets (all nine are always there, SPEC § 2): it says how many picture
+// cards the node expects, and the image sockets past it are labelled as spare. Returns { target, shown, blocked }
+// for the callers; nothing can block any more.
 function applyCount(node) {
     if (!node.outputs) return null;
     const w = widget(node, COUNT_WIDGET);
     if (!w) return null;
     const target = Math.max(1, Math.min(MAX, Number(w.value) || 1));
-    let current = node.outputs.length - FIXED;
-    let blocked = 0;
-
-    while (current > target) {
-        const idx = FIXED + current - 1;
-        // Refuse to silently destroy wiring: a connected slot stays until the user
-        // disconnects it. Shrinking past it stops there rather than cutting links.
-        if (node.outputs[idx]?.links?.length) { blocked = current; break; }
-        node.removeOutput(idx);
-        current--;
-    }
-    while (current < target) {
-        node.addOutput(`image_${current + 1}`, "IMAGE");
-        current++;
-    }
-    labelOutputs(node);
+    ensureOutputs(node);
+    labelOutputs(node, target);
     node.setDirtyCanvas(true, true);
-    return { target, shown: current, blocked };
+    return { target, shown: target, blocked: 0 };
 }
 
 // Output names as shown: the image sockets read as the H3 inputs they feed, counted from 0
-// like them. Display only: migration and saved wires go by the real names.
+// like them; one past image_count reads "(spare)". Display only: migration and saved wires go by the real names.
 const OUTPUT_LABELS = { images: "llm_images", video: "llm_video" };
-function labelOutputs(node) {
+function labelOutputs(node, count = MAX) {
     for (const slot of node.outputs || []) {
         const n = /^image_(\d+)$/.exec(slot.name || "");
-        const label = n ? `ref_image_${Number(n[1]) - 1}` : OUTPUT_LABELS[slot.name];
+        const label = n ? `ref_image_${Number(n[1]) - 1}${Number(n[1]) > count ? " (spare)" : ""}` : OUTPUT_LABELS[slot.name];
         if (label) slot.label = label;
     }
 }
 
 // The one way the count is ever set — stepper, arrows, card list, hand-typed
-// path, all land here. Clamped to 1..MAX; a wired slot that refuses to go says so.
+// path, all land here. Clamped to 1..MAX.
 function setCount(node, value) {
     const cw = widget(node, COUNT_WIDGET);
     if (!cw) return null;
     const next = Math.max(1, Math.min(MAX, Number(value) || 1));
     if (Number(cw.value) !== next) {
         cw.value = next;
-        cw.callback?.(next);      // the wrapped callback re-applies the sockets
+        cw.callback?.(next);      // the wrapped callback re-labels the sockets
     }
     const res = applyCount(node);
-    if (res?.blocked) node._lunaNotice?.(`image_${res.blocked} is wired — outputs stop there.`);
     node.setDirtyCanvas(true, true);
     return res;
 }
 
-// image_count follows the number of loaded images in BOTH directions. Upload used
-// to grow it and nothing ever shrank it, so deleting pictures left the node
-// showing sockets for images that no longer existed. Wired slots still survive —
-// applyCount stops at them and says so.
+// image_count follows the number of loaded images in BOTH directions; only the labels change.
 const syncCount = (node, count) => setCount(node, count);
 
 // Clicking the number types one. LiteGraph's own prompt, so it looks like every
@@ -1218,7 +1282,12 @@ function buildUI(node) {
         sec.append(h, grid, ...editors);
         return sec;
     };
-    root.append(bar,
+    // The node's overlap, a row of its own, with or without a song (SPEC § 2): frames each shot shares with the one
+    // before, for the song, the vocal stem and the clip cards by shot number; out on `overlap`.
+    const ovRow = document.createElement("div");
+    ovRow.className = "luna-al-row luna-al-ovn";
+    ovRow.title = "Frames each shot shares with the one before: the song, the vocal stem and the clip cards by shot number move by the shot length minus this. Goes out on the overlap output.";
+    root.append(bar, ovRow,
         section("p", "Pictures", cards, [preview, panel]),
         section("v", "Clips", vcards, [ved]),
         section("a", "Sounds", acards, [aed]),
@@ -1256,7 +1325,9 @@ function buildUI(node) {
     mkBtn("Upload", "", () => picker.click());
     mkBtn("Clear", "danger", () => {
         writePaths(node, []); syncCount(node, 0);
-        writeMedia(node, { audio: [], video: [], pictures: [], shot: readMedia(node).shot }); selAudio = -1; selVideo = -1;
+        // The cards go; the node's settings (⚙, the Overlap row, an old save's migrated overlap) stay.
+        const kept = readMedia(node);
+        writeMedia(node, { audio: [], video: [], pictures: [], shot: kept.shot, settings: kept.settings }); selAudio = -1; selVideo = -1;
         render();
     });
 
@@ -1530,8 +1601,9 @@ function buildUI(node) {
             vcards.appendChild(card);
             mediaInfo(c.file).then((mi) => {
                 dim.textContent = `${(mi.duration || 0).toFixed(1)} s · ${+(mi.fps || 0).toFixed(2)} fps${mi.audio ? "" : " · no sound"}`;
-                // A silent clip shifts the <Audio n> numbers: redraw the tags now that it is known.
-                if (!mi.audio && c.sound !== "drop") renderTimeline();
+                // A silent clip shifts the <Audio n> numbers, and clip V1's rate is the General shot's rate: redraw
+                // the timeline now that they are known.
+                if ((!mi.audio && c.sound !== "drop") || i === 0) renderTimeline();
             }).catch(() => { dim.textContent = "cannot be read"; });
         });
 
@@ -1576,12 +1648,13 @@ function buildUI(node) {
             acards.appendChild(card);
             loadPeaks(c.file).then((info) => {
                 dim.textContent = `${clock(info.duration).replace(/\.\d+$/, "")} · ${(info.sampleRate / 1000).toFixed(1)} kHz`;
-                const dur = c.duration > 0 ? c.duration : info.duration - c.start;
+                const dur = soundWindow(c, i, shotLen());
                 setTimeout(() => drawWave(cv, info, 0, info.duration, c.start, c.start + dur, { step: 2 }), 0);
             }).catch(() => { dim.textContent = "cannot be read"; });
         });
 
         syncAccent(node, root);
+        renderOverlap();
         renderTimeline();
         renderPreview();
         renderPanel();
@@ -1591,6 +1664,25 @@ function buildUI(node) {
         // The widget's getHeight depends on how many cards there are, so a redraw
         // has to follow any change to the list or the node keeps its old height.
         node.setDirtyCanvas(true, true);
+    }
+
+    function renderOverlap() {
+        const m = readMedia(node), [ov, warn] = nodeOverlap(m);
+        ovRow.innerHTML = `<div class="luna-al-lbl">Overlap</div><div class="luna-al-seg"></div><span class="luna-al-io"></span>`;
+        const seg = ovRow.querySelector(".luna-al-seg");
+        for (const v of OVERLAP_ROW) {
+            const o = document.createElement("div");
+            o.className = "luna-al-opt" + (v === ov ? " on" : "");
+            o.textContent = v === OVERLAP_ROW[OVERLAP_ROW.length - 1] ? `${v} frames` : String(v);
+            o.onclick = () => {
+                const mm = readMedia(node);
+                mm.settings = { ...(mm.settings || {}), overlap: v };
+                writeMedia(node, mm);
+                render();
+            };
+            seg.appendChild(o);
+        }
+        ovRow.querySelector(".luna-al-io").textContent = warn || (OVERLAP_ROW.includes(ov) ? "" : `${ov} (the first clip)`);
     }
 
     function renderPreview() {
@@ -1741,12 +1833,14 @@ function buildUI(node) {
 
     /* ------------------------------------------------------- shot timeline */
 
-    // The shot length in frames: the wired seconds when there are any, else the
-    // length kept on the node (124 frames = MiniMax H3's 5.17 s default).
+    // The shot length in frames, the same one count as asset_loader (asset_timeline.shot_frames): the wired
+    // seconds at the shot's rate when there are any, else the length kept on the node (124 frames = MiniMax H3's
+    // 5.17 s default), rounded UP onto the target's grid; past 362 on H3 a warning, never a cut.
     function shotLen() {
-        const ws = wiredSeconds();
-        if (ws.wired && ws.value > 0) return { frames: Math.round(ws.value * H3_FPS), from: ws.from };
-        return { frames: readMedia(node).shot?.frames || 124, from: "" };
+        const m = readMedia(node), grid = targetOf(m).grid, rate = shotRate(m), ws = wiredSeconds();
+        const wired = ws.wired && ws.value > 0;
+        const frames = wired ? framesFor(ws.value, rate, grid) : framesUp(m.shot?.frames || 124, grid);
+        return { frames, from: wired ? ws.from : "", rate, grid, seconds: frames / rate, warning: framesWarning(frames, grid) };
     }
 
     // Patch one card's role/placement. kind: "p" (picture index), "v", "a".
@@ -1792,7 +1886,7 @@ function buildUI(node) {
         r2.innerHTML = `<div class="luna-al-lbl">At frame</div><div class="luna-al-nf"><span class="luna-al-nud" data-a="first" title="The first frame">First</span><input class="at" style="width:52px"><span class="luna-al-nud" data-a="last" title="As late as it fits">Last</span><span class="luna-al-lock"></span></div>`;
         const inp = r2.querySelector(".at");
         inp.value = String(at || 0);
-        r2.querySelector(".luna-al-lock").textContent = `of ${S} · ${((at || 0) / H3_FPS).toFixed(2)} s`;
+        r2.querySelector(".luna-al-lock").textContent = `of ${S} · ${((at || 0) / shotLen().rate).toFixed(2)} s`;
         const set = (v) => setPlacement(kind, i, { at: Math.max(0, Math.min(Math.round(v), Math.max(0, S - len))) });
         inp.onchange = () => { const v = Number(inp.value); if (Number.isFinite(v)) set(v); };
         inp.addEventListener("keydown", (e) => { if (e.key === "Enter") inp.blur(); e.stopPropagation(); });
@@ -1805,10 +1899,10 @@ function buildUI(node) {
         const m = readMedia(node), paths = readPaths(node);
         if (!paths.length && !m.video.length && !m.audio.length) { tl.style.display = "none"; tl.replaceChildren(); return; }
         tl.style.display = "";
-        const { frames: S, from } = shotLen();
+        const { frames: S, from, rate, warning } = shotLen();
         const tags = h3Tags(node);
         tl.innerHTML = `
-            <div class="luna-al-tlh"><span>Shot</span><b>${S} frames · ${(S / H3_FPS).toFixed(2)} s</b>
+            <div class="luna-al-tlh"><span>Shot</span><b>${S} frames · ${(S / rate).toFixed(2)} s</b>
               <span>${from ? `from ${from.replace(/[<>&]/g, "")}` : "set here"}</span><span class="sp"></span>
               ${from ? "" : `<span class="luna-al-nud" data-s="-1" title="17 frames shorter">−</span><span class="luna-al-nud" data-s="1" title="17 frames longer">+</span>`}</div>
             <div class="luna-al-lane"><span></span><div class="luna-al-truler"></div></div>
@@ -1828,7 +1922,7 @@ function buildUI(node) {
         tl.querySelectorAll("[data-s]").forEach((b) => {
             b.onclick = () => {
                 const mm = readMedia(node);
-                mm.shot = { frames: Math.max(1, Math.min(1000, S + targetOf(mm).step * Number(b.dataset.s))) };
+                mm.shot = { frames: Math.max(1, Math.min(1000, stepGrid(S, Number(b.dataset.s), targetOf(mm).grid))) };
                 writeMedia(node, mm); render();
             };
         });
@@ -1896,7 +1990,8 @@ function buildUI(node) {
                 `${tags.names.a[j]}: sound A${j + 1} ${role === "lock" ? "locked — the picture follows it" : "as a guide"}, from frame ${at}, not sent as a reference`, selAudio === j);
         });
         if (!refs.children.length) refs.innerHTML = `<span class="luna-al-tlnote">none — everything is on the shot</span>`;
-        q(".luna-al-tlnote").textContent = `${targetOf(m).label}: ${targetOf(m).note}`
+        q(".luna-al-tlnote").textContent = (warning ? `WARNING: ${warning} ` : "")
+            + `${targetOf(m).label}, ${+rate.toFixed(3)} fps: ${targetOf(m).note}`
             + (targetOf(m).grid === "h3" ? " H3 numbers only the references, in this order." : "");
     }
 
@@ -1926,17 +2021,19 @@ function buildUI(node) {
         return { wired: true, value, from };
     }
 
-    // Shot mode: shot n's window starts at song_start + (n-1) x (shot length - overlap).
-    const shotStep = (len, overlap) => len - overlap / H3_FPS;
-    const shotCount = (T, songStart, len, overlap) => {
-        const step = shotStep(len, overlap);
+    // Shot mode: shot n's window starts at song_start + (n-1) x (shot length - overlap / the shot's rate)
+    // (media_io.song_shot_start); the overlap is the node's (nodeOverlap).
+    const shotStep = (len, overlap, rate = H3_FPS) => len - overlap / rate;
+    const shotCount = (T, songStart, len, overlap, rate = H3_FPS) => {
+        const step = shotStep(len, overlap, rate);
         return step > 0 && T > songStart ? Math.ceil((T - songStart) / step) : 0;
     };
-    // Rows of the editor beyond the base, for the node's arithmetic height.
+    // Rows of the editor beyond the base, for the node's arithmetic height. The vocal stem row (sound card 1)
+    // takes the place of the old Snap row, which is in the base.
     const audioExtraRows = () => {
         const c = readMedia(node).audio[selAudio];
         const role = c ? soundRole(c, selAudio) : "ref";
-        return 1 + (c?.position === "shot" ? 2 : 0) + 1 + (role !== "ref" ? 1 : 0);   // + Role, + At frame
+        return 1 + (c?.position === "shot" ? 1 : 0) + 1 + (role !== "ref" ? 1 : 0);   // Position, Shot, Role, At frame
     };
 
     let player = null, playRaf = 0;
@@ -1958,17 +2055,20 @@ function buildUI(node) {
         }
         aed.style.display = "";
         const idx = selAudio;
-        const card = { fill: "silence", snap: "off", position: "free", song_start: 0, shot: 1, overlap: 22, ...media.audio[idx] };
-        // Snap a duration to the target's clip lengths; nudge by the ⚙ step.
-        const snapSeconds = (sec) => { const T = targetOf(media), fps = T.fps || H3_FPS; return gridFrames(sec * fps, T.grid) / fps; };
+        const card = { fill: "silence", position: "free", song_start: 0, shot: 1, ...media.audio[idx] };
+        // The window is the shot length (one count per run); the overlap is the node's row.
+        const shot = shotLen(), rate = shot.rate, grid = targetOf(media).grid, overlap = nodeOverlap(media)[0];
         const nudge = () => Number(settingsOf(media).audio.nudge) || 0.1;
         // A wired song_start (Luna-H3-ShotList) places the window; the card's start and
         // its shot-number mode stand aside, exactly as in Python.
         const wss = wiredSongStart(), placed = wss.wired;
         const byShot = card.position === "shot" && !placed;
         let start = Number(card.start) || 0, songStart = Number(card.song_start) || 0;
-        let dur = Number(card.duration) || 0, info = null;
+        let dur = soundWindow(card, idx, shot), info = null;
+        // A wired seconds input owns the song's length (the shot); cards 2-3 keep their own, at most the shot.
+        const isSong = idx === 0;
         const ws = wiredSeconds(), wsh = wiredShot();
+        const lockLen = ws.wired && idx === 0;
         const placedNote = () => notice(`The start comes from the song_start input (${wss.from}).`);
         const shotNo = () => Math.max(1, Math.round(wsh.wired && wsh.value > 0 ? wsh.value : Number(card.shot) || 1));
 
@@ -1988,9 +2088,8 @@ function buildUI(node) {
             <div class="luna-al-row"><div class="luna-al-lbl">Position</div><div class="luna-al-seg pos"></div></div>
             <div class="luna-al-row shotrow"><div class="luna-al-lbl">Shot</div>
               <div class="luna-al-nf"><span class="luna-al-nud" data-s="-1" title="Previous shot">◀</span><input class="sn" style="width:46px"><span class="luna-al-nud" data-s="1" title="Next shot">▶</span><span class="luna-al-lock sl"></span></div></div>
-            <div class="luna-al-row ovrow"><div class="luna-al-lbl">Overlap</div><div class="luna-al-seg ov"></div></div>
             <div class="luna-al-row"><div class="luna-al-lbl">Song ends</div><div class="luna-al-seg fill"></div></div>
-            <div class="luna-al-row snaprow"><div class="luna-al-lbl">Snap</div><div class="luna-al-seg snap"></div></div>
+            <div class="luna-al-row vocrow"><div class="luna-al-lbl">Vocal stem</div><div class="luna-al-nf"><span class="luna-al-lock vn"></span><span class="luna-al-opt vadd" title="The vocal stem of this song (for H3's lip-sync lock): cut to the same window, out on vocals">+ stem</span><span class="luna-al-opt vx" title="Remove the vocal stem">Remove</span></div></div>
             <div class="luna-al-astat"></div>`;
         const $ = (s) => aed.querySelector(s);
         $(".nm").textContent = card.file;
@@ -2017,9 +2116,9 @@ function buildUI(node) {
 
         const total = () => info?.duration || 0;
         // dur 0 means "to the end of the file"; a wired seconds input wins over both.
-        const eff = () => (ws.wired && ws.value > 0) ? ws.value
-            : (dur > 0 ? dur : (byShot ? 0 : Math.max(0, total() - start)));
-        const step = () => shotStep(eff(), Number(card.overlap) || 0);
+        // Always the shot length; an edge drag changes it, and on release the node's shot length follows.
+        const eff = () => dur;
+        const step = () => shotStep(eff(), overlap, rate);
         // The window this run uses. In shot mode it is derived from where shot 1 begins.
         const winStart = () => placed ? (wss.value ?? start) : byShot ? songStart + (shotNo() - 1) * step() : start;
         const clampWin = (t) => Math.max(byShot ? (shotNo() - 1) * Math.max(0, step()) : 0,
@@ -2043,52 +2142,70 @@ function buildUI(node) {
         seg($(".pos"), [["free", "Free"], ["shot", "By shot number"]], card.position, (v) => {
             if (v === card.position) return;
             if (v === "shot") {
-                // Start from what is on screen: this window becomes shot 1, and a
-                // whole-song window becomes one H3 shot (124 frames) rather than nothing.
-                if (!ws.wired && !(dur > 0)) dur = 124 / H3_FPS;
+                // Start from what is on screen: this window becomes shot 1.
                 commit({ position: "shot", song_start: +start.toFixed(6), shot: 1, duration: +dur.toFixed(6) });
             } else commit({ position: "free", start: +winStart().toFixed(6) });
         });
-        seg($(".ov"), [[22, "22"], [39, "39"], [90, "90"], [141, "141"], [192, "192 frames"]],
-            Number(card.overlap), (v) => commit({ overlap: v }));
         seg($(".fill"), [["silence", "Silence"], ["loop", "Loop the song"]], card.fill, (v) => commit({ fill: v }));
-        seg($(".snap"), [["off", "Off"], ["h3", `${targetOf(media).gridText} shot lengths`]], card.snap, (v) => {
-            commit({ snap: v, duration: v === "h3" && dur > 0 ? snapSeconds(dur) : dur });
-        });
-        $(".snaprow").style.display = ws.wired ? "none" : "";
-        $(".shotrow").style.display = $(".ovrow").style.display = byShot ? "" : "none";
+        // The vocal stem rides sound card 1 only: the same start, length and fill as the song.
+        $(".vocrow").style.display = idx === 0 ? "" : "none";
+        $(".vn").textContent = card.vocals ? card.vocals : "none";
+        $(".vx").style.display = card.vocals ? "" : "none";
+        $(".vadd").textContent = card.vocals ? "Change" : "+ stem";
+        $(".vadd").onclick = () => {
+            const pickStem = document.createElement("input");
+            pickStem.type = "file";
+            pickStem.accept = "audio/*,.mp3,.wav,.flac,.ogg,.opus,.m4a,.aac";
+            pickStem.onchange = async () => {
+                const f = Array.from(pickStem.files || []).filter(isAudioFile);
+                if (!f.length) return;
+                const [name] = await uploadFiles(f.slice(0, 1));
+                if (name) commit({ vocals: name });
+            };
+            pickStem.click();
+        };
+        $(".vx").onclick = () => commit({ vocals: "" });
+        $(".shotrow").style.display = byShot ? "" : "none";
         $(".pos").parentElement.style.display = placed ? "none" : "";
         $(".stl").textContent = byShot ? "Song start" : "Start";
 
         function commit(patch = {}) {
             const m = readMedia(node);
             if (!m.audio[idx]) return;
+            // A new length (an edge, the Duration field): the song's is the node's shot length, rounded UP onto the
+            // grid (a wired seconds input owns it instead); a card 2-3's is its own Duration, at most the shot. An
+            // unchanged length keeps what is stored, so a card on 0 (= the shot) keeps following the shot.
+            const len = soundLengthPatch(idx, dur, shot);
+            const changed = Math.abs(dur - soundWindow(card, idx, shot)) > 1e-6;
+            if (!ws.wired && len.shotFrames && changed) m.shot = { frames: len.shotFrames };
+            const duration = isSong || changed ? +len.duration.toFixed(6) : Number(m.audio[idx].duration) || 0;
             m.audio[idx] = { ...m.audio[idx], start: +start.toFixed(6), song_start: +songStart.toFixed(6),
-                             duration: +dur.toFixed(6), ...patch };
+                             duration, ...patch };
             writeMedia(node, m);
             render();
         }
 
         function draw() {
             const e = eff(), T = total(), a = winStart(), n = shotNo();
-            const N = byShot && T ? shotCount(T, songStart, e, Number(card.overlap) || 0) : 0;
+            const N = byShot && T ? shotCount(T, songStart, e, overlap, rate) : 0;
             iSt.value = clock(byShot ? songStart : placed ? a : start);
             iSt.readOnly = placed;
             iSt.classList.toggle("lockd", placed);
             iDu.value = `${e.toFixed(2)} s`;
             iEn.value = `${clock(a)} – ${clock(a + e)}`;
-            iDu.readOnly = ws.wired;
-            iDu.classList.toggle("lockd", ws.wired);
-            $(".dl").textContent = ws.wired
-                ? (ws.value > 0 ? `🔒 ${Math.round(e * H3_FPS)} frames · ${ws.from}` : `🔒 set by ${ws.from} — known after a run`)
-                : `${Math.round(e * H3_FPS)} frames at 24 fps`;
+            iDu.readOnly = lockLen;
+            iDu.classList.toggle("lockd", lockLen);
+            $(".dl").textContent = !isSong ? `at most the shot, ${shot.seconds.toFixed(2)} s` : (ws.wired
+                ? (ws.value > 0 ? `🔒 ${shot.frames} frames · ${ws.from}` : `🔒 set by ${ws.from} — known after a run`)
+                : `${framesFor(e, rate, grid)} frames at ${+rate.toFixed(3)} fps · the shot length`)
+                + (shot.warning ? ` · ${shot.frames} is past 362: kept, not cut` : "");
             iSn.value = String(n);
             iSn.readOnly = wsh.wired;
             iSn.classList.toggle("lockd", wsh.wired);
             $(".sl").textContent = wsh.wired
                 ? (wsh.value > 0 ? `🔒 from ${wsh.from}` : `🔒 set by ${wsh.from} — known after a run`)
                 : (N ? `of ${N}` : "");
-            win.classList.toggle("locked", ws.wired || placed);
+            win.classList.toggle("locked", lockLen || placed);
             if (T) {
                 // Percent, never measured pixels: ComfyUI scales DOM widgets with the canvas
                 // zoom, so getBoundingClientRect() is SCREEN pixels while style.left is the
@@ -2119,15 +2236,17 @@ function buildUI(node) {
                 msg = `<span class="w">Shot ${n} would start at ${clock(a)}, after the song ends (${clock(T)}). This song has ${N} shot(s); the run will stop with that message.</span>`;
             else if (byShot)
                 msg = `Shot <b>${n}</b>${N ? ` of ${N}` : ""} uses the song from <b>${clock(a)}</b> to <b>${clock(a + e)}</b>`
-                    + (n > 1 && Number(card.overlap) ? `, sharing its first ${(Number(card.overlap) / H3_FPS).toFixed(2)} s with shot ${n - 1}` : "")
+                    + (n > 1 && overlap ? `, sharing its first ${(overlap / rate).toFixed(2)} s with shot ${n - 1}` : "")
                     + `. Each shot starts ${step().toFixed(2)} s after the one before. Change the shot number${wsh.wired ? "" : " (or wire <b>shot</b>)"} and the window follows; dragging moves every shot together.`;
             else if (placed)
                 msg = wss.value != null
                     ? `🔒 The start comes from the <b>song_start</b> input (${wss.from}): ${clock(a)}–${clock(a + e)}. Change the scene there and the window follows.`
                     : `🔒 The start comes from the <b>song_start</b> input (${wss.from}) — known after a run.`;
+            else if (!isSong)
+                msg = `A reference or guide sound keeps its own window, at most the shot length (${shot.seconds.toFixed(2)} s). Drag it or type Start and Duration; the shot length does not change.`;
             else msg = ws.wired
                 ? `The duration comes from the <b>seconds</b> input, so the song always matches the shot. Move the window or type a start.`
-                : `Drag the window to choose the part; drag its edges or type Start and Duration.`;
+                : `The window is the shot length. Drag it to choose the part; drag its right edge or type a Duration and the shot length follows (rounded up onto the grid).`;
             const short = T && a < T ? a + e - T : 0;
             if (short > 0.005)
                 msg += `<br><span class="w">The song ends ${short.toFixed(2)} s before the window does; that part will be ${card.fill === "loop" ? "the song again from its start" : "silence"}.</span>`;
@@ -2185,7 +2304,7 @@ function buildUI(node) {
             if (!info) return;
             const edge = e.target.classList.contains("h") ? (e.target.classList.contains("l") ? "l" : "r") : "m";
             if (placed && edge !== "r") { placedNote(); return; }
-            if (edge !== "m" && ws.wired) { notice("The duration comes from the seconds input."); return; }
+            if (edge !== "m" && lockLen) { notice("The duration comes from the seconds input."); return; }
             if (edge === "l" && byShot) { notice("In shot mode the window starts where the shot number puts it."); return; }
             drag = { edge, x: e.clientX, a: winStart(), d: eff() };
             win.setPointerCapture(e.pointerId);
@@ -2198,14 +2317,14 @@ function buildUI(node) {
             else if (drag.edge === "l") {
                 start = Math.max(0, Math.min(drag.a + drag.d - 0.1, drag.a + dt));
                 dur = drag.a + drag.d - start;
-            } else dur = Math.max(0.1, Math.min(T - drag.a, drag.d + dt));
+            } else dur = Math.max(1 / rate, Math.min(T - drag.a, drag.d + dt, isSong ? Infinity : shot.seconds));
             draw();
         });
         const end = () => {
             if (!drag) return;
             const resized = drag.edge !== "m";
             drag = null;
-            if (resized && card.snap === "h3") dur = snapSeconds(dur);
+            if (resized) dur = soundLengthPatch(idx, dur, shot).duration;   // the song onto the grid; others capped
             commit();
         };
         win.addEventListener("pointerup", end);
@@ -2292,9 +2411,9 @@ function buildUI(node) {
             commit();
         };
         iDu.onchange = () => {
-            if (ws.wired) return;
+            if (lockLen) return;
             const v = parseClock(iDu.value);
-            if (v != null && v > 0) dur = card.snap === "h3" ? snapSeconds(v) : v;
+            if (v != null && v > 0) dur = soundLengthPatch(idx, v, shot).duration;
             commit();
         };
         iSn.onchange = () => {
@@ -2354,6 +2473,9 @@ function buildUI(node) {
               <span class="l">Length</span><div class="luna-al-nf"><span class="luna-al-nud" data-f="-1" title="Shorter">−</span><input class="fr" style="width:56px"><span class="luna-al-nud" data-f="1" title="Longer">+</span><span class="luna-al-lock fl"></span></div>
             </div>
             <div class="rolehost" style="display:flex;flex-direction:column;gap:5px"></div>
+            <div class="luna-al-row"><div class="luna-al-lbl">Position</div><div class="luna-al-seg vpos"></div></div>
+            <div class="luna-al-row vshotrow"><div class="luna-al-lbl">Shot</div>
+              <div class="luna-al-nf"><span class="luna-al-nud" data-vs="-1" title="Previous shot">◀</span><input class="vsn" style="width:46px"><span class="luna-al-nud" data-vs="1" title="Next shot">▶</span><span class="luna-al-lock vsl"></span></div></div>
             <div class="luna-al-sect">Load settings</div>
             <div class="luna-al-row"><div class="luna-al-lbl">Frame rate</div><div class="luna-al-seg fps"></div></div>
             <div class="luna-al-row"><div class="luna-al-lbl">Frames</div><div class="luna-al-seg cnt"></div></div>
@@ -2410,7 +2532,16 @@ function buildUI(node) {
             seg($(".nth"), [[1, "All"], [2, "2nd"], [3, "3rd"], [4, "4th"]], card.nth, (v) => commit({ nth: v }));
             seg($(".snd"), [["keep", mi && !mi.audio ? "Keep (none in file)" : "Keep"], ["drop", "Drop"]], card.sound, (v) => commit({ sound: v }));
             seg($(".prec"), [["fp16", "fp16 (half the memory)"], ["fp32", "fp32"]], card.precision, (v) => commit({ precision: v }));
+            // Like the song card: Free opens at Start; By shot number makes Start shot 1's, and shot n opens
+            // (n - 1) x (shot length - overlap) later, n being Shot (+ the chain's clip when Luna-H3-Chain is wired).
+            seg($(".vpos"), [["free", "Free"], ["shot", "By shot number"]], card.position, (v) => commit({ position: v }));
+            $(".vshotrow").style.display = card.position === "shot" ? "" : "none";
             $(".fitrow").style.display = card.size === "canvas" ? "" : "none";
+        };
+        // The shot this clip card opens at, when it moves by shot number (asset_loader._clip_starts).
+        const vShotNo = () => {
+            const wsh = wiredNumber("shot", (last) => last?.shot > 0 ? last.shot : null);
+            return Math.max(1, Math.round(wsh.wired && wsh.value > 0 ? wsh.value : Number(card.shot) || 1));
         };
 
         function commit(patch = {}) {
@@ -2425,6 +2556,7 @@ function buildUI(node) {
             const fps = outFps(), T = dur(), s = clipS();
             iSt.value = clock(start);
             iFr.value = String(frames);
+            $(".vsn").value = String(Number(card.shot) || 1);
             $(".fl").textContent = `${s.toFixed(2)} s at ${+fps.toFixed(3)} fps`;
             if (T) {
                 win.style.left = `${Math.min(start, T) / T * 100}%`;
@@ -2444,6 +2576,14 @@ function buildUI(node) {
                 msg += `<br><span class="w">Match canvas needs <b>width</b> and <b>height</b> wired; until then the clip keeps its shape at a 768 short edge.</span>`;
             if (T && start + s > T + 1e-3)
                 msg += `<br><span class="w">The clip ends ${(start + s - T).toFixed(2)} s before the window does; the run takes what is there${card.count === "target" ? ", cut down to the H3 grid" : ""}.</span>`;
+            const sh = shotLen(), delivered = fps / Math.max(1, Number(card.nth) || 1);
+            if (card.position === "shot") {
+                const n = vShotNo(), opens = start + (n - 1) * (sh.seconds - nodeOverlap(media)[0] / sh.rate);
+                $(".vsl").textContent = `opens at ${clock(opens)}`;
+                msg += `<br>By shot number: shot <b>${n}</b> opens this clip at <b>${clock(opens)}</b>; each shot moves it ${(sh.seconds - nodeOverlap(media)[0] / sh.rate).toFixed(2)} s on (the shot length minus the overlap). With Luna-H3-Chain wired, the chain's clip number is added to Shot.`;
+            }
+            if (Math.abs(delivered - sh.rate) > 1e-3 && (mi || card.fps !== "source"))
+                msg += `<br><span class="w">Delivered at ${+delivered.toFixed(3)} fps, not the shot's ${+sh.rate.toFixed(3)} fps${targetOf(media).grid !== "free" ? `: ${targetOf(media).label} plays it at ${sh.rate} fps, so it does not fit the shot` : ""}. The run says so in asset_brief.</span>`;
             if (mi) {
                 const how = mi.fps && Math.abs(fps - mi.fps) > 0.01 ? (fps < mi.fps ? "drops frames" : "repeats frames") : "unchanged";
                 msg += `<br>${+mi.fps.toFixed(2)} → ${+fps.toFixed(2)} fps (${how}). MiniMax H3 sees it as <b>&lt;Video ${idx + 1}&gt;</b>${card.sound === "keep" && mi.audio ? ", its sound as the &lt;Audio&gt; right before it" : ""}.`;
@@ -2520,7 +2660,12 @@ function buildUI(node) {
         });
         iSt.onchange = () => { const v = parseClock(iSt.value); if (v != null) start = clampStart(v); commit(); };
         iFr.onchange = () => { const v = Math.round(Number(iFr.value)); if (v >= 1) frames = snapCount(v); commit(); };
-        for (const inp of [iSt, iFr]) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") inp.blur(); });
+        const iVs = $(".vsn");
+        iVs.onchange = () => { const v = Math.round(Number(iVs.value)); commit(Number.isFinite(v) && v >= 1 ? { shot: v } : {}); };
+        ved.querySelectorAll("[data-vs]").forEach((b) => {
+            b.onclick = () => commit({ shot: Math.max(1, (Number(card.shot) || 1) + Number(b.dataset.vs)) });
+        });
+        for (const inp of [iSt, iFr, iVs]) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") inp.blur(); });
 
         let vt = 0;
         $(".luna-al-play").onclick = () => {
@@ -2535,10 +2680,10 @@ function buildUI(node) {
         video.addEventListener("loadedmetadata", () => { try { video.currentTime = start; } catch { /* not seekable yet */ } });
     }
 
-    // Added up from its rows, like AUDIO_H; never measured. + Role, + At frame.
+    // Added up from its rows, like AUDIO_H; never measured. + Role, + At frame, + Position, + Shot.
     const videoHeight = () => {
         const c = readMedia(node).video[selVideo];
-        return 572 + 28 + (c && clipRole(c) === "guide" ? 28 : 0);
+        return 572 + 28 + (c && clipRole(c) === "guide" ? 28 : 0) + 28 + (c?.position === "shot" ? 28 : 0);
     };
     const timelineHeight = () => {
         const m = readMedia(node);
@@ -2557,7 +2702,7 @@ app.registerExtension({
     setup() { patchDeserialize(); },
     beforeConfigureGraph(graphData) {
         const moved = migrateWorkflowJSON(graphData);
-        if (moved.length) console.info("[Luna-H3-AssetLoader] updated a workflow saved before the current fixed outputs:", moved);
+        if (moved.length) console.info("[Luna-H3-AssetLoader] updated a workflow saved before the current outputs:", moved);
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE) return;
@@ -2583,7 +2728,7 @@ app.registerExtension({
             // frontend 1.55.17 (2026-10-16) and are constants from then on.
             const GRID_SIDE = 35;          // DOM widget margins + root padding, horizontally
             const CARD_MIN = 112, CARD_GAP = 8;
-            const ROOT = 12 + 27 + 4 * 6;  // root padding, toolbar, gaps between bar/rows/timeline
+            const ROOT = 12 + 27 + 22 + 5 * 6;  // root padding, toolbar, the Overlap row, gaps between bar/rows/timeline
             const SEC = 7 + 21 + 6;        // row border + padding, heading, gap to the cards
             // AUDIO_BASE: song editor without its Position/Role/At-frame rows, measured 276 after the zoom
             // tools replaced the strip (2026-10-16), + 16 kept for the overview bar shown when zoomed.
@@ -2640,9 +2785,7 @@ app.registerExtension({
                     // only on workflow reload, which left the count and the sockets
                     // disagreeing until you found the button. Changing the number
                     // IS the action.
-                    const res = applyCount(self);
-                    if (res?.blocked)
-                        self._lunaNotice?.(`image_${res.blocked} is wired — outputs stop there.`);
+                    applyCount(self);   // the labels only: every socket always exists
                     return out;
                 };
             }

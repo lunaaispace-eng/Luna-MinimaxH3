@@ -263,6 +263,32 @@ def test_last_scene_alone_terminates_without_expanding(monkeypatch, out_root):
         _end(monkeypatch, dyn, "4", ["1", 0], state, images=_images())
 
 
+def test_end_refuses_a_rate_other_than_24_before_saving(monkeypatch, out_root):
+    """SPEC 1 (2026-11-20): a node that works only at 24 fps raises on another rate instead of assuming 24."""
+    _, state, *_ = _start(out_root)
+    dyn = FakeDynPrompt(_body_prompt())
+    with pytest.raises(ValueError, match="works at 24 fps only") as e:
+        _end(monkeypatch, dyn, "4", ["1", 0], state, images=_images(), fps=25.0)
+    assert "fps is 25" in str(e.value)
+    str(e.value).encode("ascii")
+    assert not (out_root / "h3_loops" / "t" / "scene_0000.manifest.json").exists()   # raised at the start
+    with mock.patch.object(h3_loop, "_output_node_types", lambda: set()):
+        out = _end(monkeypatch, dyn, "4", ["1", 0], state, images=_images(), fps=24.0)
+    assert out.expand is not None
+    assert (out_root / "h3_loops" / "t" / "scene_0000.manifest.json").is_file()
+
+
+def test_end_schema_order_is_pinned():
+    end = LunaH3LoopEnd.GET_SCHEMA()
+    assert [i.id for i in end.inputs] == [
+        "flow", "state", "images", "audio", "latent", "fps", "memory_policy", "cut_rule", "time_lock",
+        "search_window", "breath_source", "breath_audio", "match_threshold", "fallback", "crossfade_frames",
+        "color_match", "color_strength", "manual_cuts", "report"]
+    fps = next(i for i in end.inputs if i.id == "fps")
+    assert fps.default == 24.0 and fps.optional is True and "Must be 24" in fps.tooltip
+    assert [o.id for o in end.outputs] == ["manifest_path", "scene_count", "joined_video_path", "report_path"]
+
+
 def test_end_outputs_are_none_before_the_last_scene(monkeypatch, out_root):
     _, state, *_ = _start(out_root)
     dyn = FakeDynPrompt(_body_prompt())

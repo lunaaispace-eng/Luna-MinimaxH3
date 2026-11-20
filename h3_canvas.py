@@ -31,6 +31,11 @@ import math
 
 from comfy_api.latest import io
 
+try:
+    from .luna_units import frames_for, frames_up, frames_warning
+except ImportError:  # imported flat by the unit tests
+    from luna_units import frames_for, frames_up, frames_warning
+
 # H3 model parameters.
 CANVAS_MULTIPLE = 32
 BASE_SHORT_EDGE = 768
@@ -132,9 +137,8 @@ def _label_size(label: str) -> tuple[int, int]:
 
 
 def align_frames(n: int) -> int:
-    """Next frame count on H3's sampling grid, at or above n."""
-    n = max(FRAME_PHASE, int(n))
-    return n + ((FRAME_PHASE - n) % FRAME_GRID)
+    """Next frame count on H3's sampling grid, at or above n (luna_units.frames_up, the shared rule)."""
+    return frames_up(n, "h3")
 
 
 def h3_canvas(ratio: float) -> tuple[int, int]:
@@ -240,7 +244,9 @@ class LunaMiniMaxH3Canvas(io.ComfyNode):
                 ),
                 io.Float.Input(
                     "duration_seconds", default=10.0, min=0.2, max=150.0, step=0.1,
-                    tooltip="Snapped up to H3's frame grid; info reports what you got.",
+                    tooltip="Whole frames at 24 fps (half up), then rounded up onto H3's 17k+5 grid; "
+                            "info reports what you got. Above 362 frames info warns; the count is kept, "
+                            "not cut. Feeds frames and seconds.",
                 ),
                 io.Boolean.Input(
                     "interpolation_enabled", default=True,
@@ -275,7 +281,8 @@ class LunaMiniMaxH3Canvas(io.ComfyNode):
                 # use display_name, so saved links (by slot index) and the graph file are
                 # unaffected; only the label changes.
                 io.Int.Output(display_name="frames",
-                              tooltip="The frame count on H3's 17k+5 grid, at or above duration_seconds x 24. "
+                              tooltip="The frame count on H3's 17k+5 grid, at or above duration_seconds x 24 "
+                                      "(whole frames, half up). Above 362 a warning in info, never a cut. "
                                       "For the H3 node's length and Luna-LLMPrompt's frames."),
                 io.Float.Output(display_name="fps"),
                 io.Float.Output(display_name="output_fps"),
@@ -328,7 +335,8 @@ class LunaMiniMaxH3Canvas(io.ComfyNode):
         else:
             width, height = h3_canvas(aspect)
 
-        length = align_frames(round(duration_seconds * FPS))
+        # The shared rule (luna_units): whole frames half up, then up onto 17k+5; past 362 a warning, not a cut.
+        length = frames_for(duration_seconds, FPS, "h3")
         # Clamped once, then both returned: the factor that leaves this node is the
         # same one output_fps was computed from, so driving the interpolation node
         # from it cannot disagree with the frame rate. Gated off, the factor is 1
@@ -353,8 +361,11 @@ class LunaMiniMaxH3Canvas(io.ComfyNode):
         # duration. Only say something when it lands more than half a step away.
         if abs(actual_seconds - duration_seconds) >= (FRAME_GRID / FPS) / 2:
             notes.append(f"asked {duration_seconds:g}s, grid gives {actual_seconds:.2f}s")
-        if not TRAINED_MIN <= length <= TRAINED_MAX:
-            notes.append(f"outside the trained {TRAINED_MIN}-{TRAINED_MAX} frame range")
+        if length < TRAINED_MIN:
+            notes.append(f"below the trained {TRAINED_MIN}-{TRAINED_MAX} frame range")
+        warning = frames_warning(length, "h3")
+        if warning:
+            notes.append(warning)
         if width * height > MAX_PIXELS:
             notes.append(f"{width * height / MAX_PIXELS:.2f}x the model's default canvas")
         if width % LATENT_MULTIPLE or height % LATENT_MULTIPLE:

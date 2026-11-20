@@ -6,7 +6,8 @@
 // goes on. Only the drawing changes; links and slots are never touched.
 //
 // Output slots (fixed by the node): 0-8 ref_image_N, 9-11 ref_video_N,
-// 12-14 ref_video_audio_N, 15-17 ref_audio_N, 18 asset_brief, 19 audio.
+// 12-14 ref_video_audio_N, 15-17 ref_audio_N, 18 asset_brief, 19 audio, 20 refs.
+// refs (20) carries every category, filtered by the switches inside it, so no switch dims it.
 
 import { app } from "../../scripts/app.js";
 import { LUNA } from "./luna_theme.mjs";

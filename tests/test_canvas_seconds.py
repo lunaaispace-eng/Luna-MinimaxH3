@@ -1,4 +1,4 @@
-"""Luna-H3-Canvas: `frames` (was `length`) on the 17k+5 grid and `seconds` = length / 24,
+r"""Luna-H3-Canvas: `frames` (was `length`) on the 17k+5 grid and `seconds` = length / 24,
 appended as the last output. Stubs comfy_api so it runs without ComfyUI.
 
     E:\ComfyUI-Easy-Install\python_embeded\python.exe -m unittest discover -s tests -v
@@ -17,8 +17,8 @@ def _stub_io():
             self.display_name = display_name
 
     class _In:
-        def __init__(self, *a, **kw):
-            pass
+        def __init__(self, name=None, *a, **kw):
+            self.name = name
 
     io = SimpleNamespace(
         ComfyNode=object, Schema=lambda **kw: SimpleNamespace(**kw),
@@ -30,6 +30,11 @@ def _stub_io():
     latest.io = io
     return {"comfy_api": ModuleType("comfy_api"), "comfy_api.latest": latest}
 
+
+# The pack root holds luna_units, which h3_canvas imports flat outside ComfyUI.
+_PACK = str(Path(__file__).resolve().parent.parent)
+if _PACK not in sys.path:
+    sys.path.insert(0, _PACK)
 
 # The stub is in place only while h3_canvas imports, so the other test files in this
 # folder still see whatever comfy_api they set up themselves.
@@ -64,6 +69,42 @@ class CanvasSecondsTests(unittest.TestCase):
             out = run(asked)
             self.assertEqual(out[2], frames)
             self.assertAlmostEqual(out[7], frames / 24.0)
+
+
+class CanvasSharedRuleTests(unittest.TestCase):
+    """Build 2: the frame count is luna_units.frames_for (whole frames half up, then up onto 17k+5); past 362 a
+    warning in info, never a cut (SPEC 1, 2026-11-20)."""
+
+    def test_schema_order_is_pinned(self):
+        schema = Canvas.define_schema()
+        self.assertEqual([i.name for i in schema.inputs],
+                         ["ratio", "portrait", "size_mode", "multiple", "resolution", "megapixels",
+                          "duration_seconds", "interpolation_enabled", "interpolation_factor", "image"])
+        self.assertEqual([o.display_name for o in schema.outputs],
+                         ["width", "height", "frames", "fps", "output_fps", "interpolation_factor", "info",
+                          "seconds"])
+
+    def test_five_seconds_is_124(self):
+        out = run(5.0)
+        self.assertEqual(out[2], 124)
+        self.assertAlmostEqual(out[7], 124 / 24.0)
+        self.assertNotIn("362", out[6])
+
+    def test_5_17_seconds_is_124(self):
+        self.assertEqual(run(5.17)[2], 124)            # 124.08 frames -> 124 whole frames -> on the grid
+
+    def test_16_seconds_is_396_with_the_warning_not_a_cut(self):
+        out = run(16.0)
+        self.assertEqual(out[2], 396)
+        self.assertAlmostEqual(out[7], 396 / 24.0)
+        self.assertIn(h3_canvas.frames_warning(396, "h3"), out[6])
+        self.assertIn("past the 362 frames", out[6])
+        out[6].encode("ascii")
+
+    def test_half_a_frame_goes_up(self):
+        # 0.9375 s = 22.5 frames: half up gives 23, so 39 (Python's round gave 22).
+        self.assertEqual(run(0.9375)[2], 39)
+        self.assertEqual(h3_canvas.align_frames(23), 39)
 
 
 def run_image(w, h, size_mode="H3 canvas", portrait=False, ratio="16:9 (widescreen)", **kw):

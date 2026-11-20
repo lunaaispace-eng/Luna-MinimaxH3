@@ -40,6 +40,11 @@ import torch
 from comfy_api.latest import io
 
 try:
+    from .luna_units import frames_down
+except ImportError:  # imported flat by the unit tests
+    from luna_units import frames_down
+
+try:
     from .h3_loop import LOG, LoopState, _scene_stem  # noqa: F401
 except ImportError:  # flat import in the unit tests
     from h3_loop import LOG, LoopState, _scene_stem  # noqa: F401
@@ -186,13 +191,7 @@ def read_clip(path: str, length: int) -> torch.Tensor:
                 break
     if not frames:
         raise ValueError(f"{LOG} {path} has no video frames.")
-    n = len(frames)
-    if n >= 5:
-        while n % 17 != 5:
-            n -= 1
-    else:
-        n = 1
-    return _to_tensor(frames[:n])
+    return _to_tensor(frames[:valid_clip_length(len(frames))])
 
 
 def read_image(path: str) -> torch.Tensor:
@@ -252,12 +251,9 @@ def _resize(image: torch.Tensor, width: int, height: int, crop: str) -> torch.Te
 
 
 def valid_clip_length(n: int) -> int:
-    """Core Add Guide: batches under 5 frames use one image, longer ones are cut to the largest 17k + 5."""
-    if n < 5:
-        return 1
-    while n % 17 != 5:
-        n -= 1
-    return n
+    """Core Add Guide: batches under 5 frames use one image, longer ones are cut to the largest 17k + 5 (a cut to
+    what exists: luna_units.frames_down)."""
+    return frames_down(n, "h3") or 1
 
 
 def make_keyframe(latent: dict, vae, audio_vae, resolved_index: int, images: torch.Tensor, audio: dict | None) -> dict:

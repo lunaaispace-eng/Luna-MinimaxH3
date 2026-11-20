@@ -19,9 +19,10 @@ from __future__ import annotations
 # The shared naming rule (luna_naming.py). Imported both ways this module is loaded: inside the
 # pack (asset_loader's relative import) and on its own, with the pack root on sys.path (the tests).
 try:
-    from . import luna_naming
+    from . import luna_naming, luna_units
 except ImportError:
     import luna_naming
+    import luna_units
 
 FPS = 24
 
@@ -56,13 +57,13 @@ def h3_tags(pic_roles: list, clips: list, sound_roles: list) -> dict:
 def target_fps(target: str, source_fps: float) -> float:
     """The frame rate 'Target' means: MiniMax H3 hardcodes 24, LTX's conditioning
     defaults to 25 (comfy_extras/nodes_lt.py LTXVConditioning), General keeps the
-    source's own rate."""
-    return {"h3": 24.0, "ltx": 25.0}.get(target, float(source_fps or 24.0))
+    source's own rate (luna_units.fps_for)."""
+    return luna_units.fps_for(target, source_fps)
 
 
 def target_grid(target: str) -> str:
-    """The clip-length grid 'Target' means: H3 17k+5, LTX 8k+1, General none."""
-    return {"h3": "h3", "ltx": "ltx"}.get(target, "free")
+    """The clip-length grid 'Target' means: H3 17k+5, LTX 8k+1, General none (luna_units.grid_for)."""
+    return luna_units.grid_for(target)
 
 
 def check_placements(shot: int, items: list, target: str = "h3") -> list:
@@ -128,9 +129,13 @@ def tail_start(duration_s: float, fps: float, frames: int, source_fps: float | N
     return max(0.0, last - (int(frames) - 1) / float(fps))
 
 
-def shot_frames(seconds, stored: int) -> int:
-    """The shot length in frames: the wired `seconds` when there is one, else the
-    length stored on the node."""
+def shot_frames(seconds, stored: int, target: str = "h3", rate: float | None = None) -> int:
+    """The shot length in frames, one count per run: the wired `seconds` at the shot's rate when there is one, else
+    the length stored on the node; either rounded UP onto the target's grid (luna_units.frames_for / frames_up: H3
+    17k+5, LTX 8k+1, General any whole count). No 362 cut: `luna_units.frames_warning` words the warning.
+    rate: the shot's frame rate (luna_units.fps_for); None = the target's own (24 for General)."""
+    grid = target_grid(target)
+    rate = float(rate) if rate else target_fps(target, None)
     if seconds is not None and float(seconds) > 0:
-        return int(round(float(seconds) * FPS))
-    return max(1, int(stored))
+        return luna_units.frames_for(float(seconds), rate, grid)
+    return luna_units.frames_up(max(1, int(stored)), grid)

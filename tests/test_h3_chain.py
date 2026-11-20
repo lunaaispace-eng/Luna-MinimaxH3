@@ -288,6 +288,83 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(float(first_of_clip_2), 1e6 + round(22 / 24 * sr))
 
 
+class SharedOverlapTests(unittest.TestCase):
+    """Build 2: an overlap off the shared list snaps to the nearest with a warning; one that snaps to 0 raises
+    (SPEC 2 overlap line; SPEC 5: 22 only with the song locked)."""
+
+    setUp = ChainTests.setUp
+    tearDown = ChainTests.tearDown
+    chain = ChainTests.chain
+    remember = ChainTests.remember
+
+    def _overlap(self, value, locked=True, frames=FRAMES):
+        import contextlib
+        import io as _io
+        (c, _) = self.chain(0, locked=locked, manager=FakeManager(frames))
+        out = _io.StringIO()
+        with contextlib.redirect_stdout(out):
+            n = h3_chain._overlap(c[0], value, "test")
+        return n, out.getvalue()
+
+    def test_50_with_the_song_locked_snaps_to_39_and_warns(self):
+        n, printed = self._overlap(50, locked=True)
+        self.assertEqual(n, 39)
+        self.assertIn("WARNING", printed)
+        self.assertIn("39 is used", printed)
+        printed.encode("ascii")
+
+    def test_on_the_list_is_silent(self):
+        for value in (22, 39, 90):
+            self.assertEqual(self._overlap(value, locked=True), (value, ""))
+
+    def test_5_snaps_to_0_and_raises(self):
+        for value in (5, 1, 0):
+            with self.assertRaisesRegex(ValueError, "needs an overlap"):
+                self._overlap(value)
+
+    def test_22_without_the_song_lock_raises(self):
+        with self.assertRaisesRegex(ValueError, "36.67"):
+            self._overlap(22, locked=False)
+        with self.assertRaisesRegex(ValueError, "36.67"):
+            self._overlap(25, locked=False)            # snaps to 22, still refused unlocked
+
+    def test_192_on_124_frame_clips_raises(self):
+        with self.assertRaisesRegex(ValueError, "shorter"):
+            self._overlap(192, frames=124)
+
+    def test_a_run_goes_on_with_a_snapped_overlap(self):
+        # Overlap 50 on the whole chain: Remember, Continue and Join all use 39.
+        (c0, _), (c1, _) = self.chain(0, overlap="50"), self.chain(1, overlap="50")
+        self.remember(c0[0], 1.0)
+        latent, _, _ = cont(c1[0], locked_song(av(0.0)), "t", False)
+        video = latent["samples"].unbind()[0]
+        v_n = h3_chain.video_steps(39)
+        self.assertTrue(torch.all(video[:, :, :v_n] == 1.0))
+        self.assertTrue(torch.all(video[:, :, v_n:] == 0.0))
+
+    def test_schema_order_is_pinned(self):
+        t = h3_chain.LunaH3Chain.INPUT_TYPES()
+        self.assertEqual((list(t["required"]), list(t["optional"]), list(t["hidden"])),
+                         (["meta_batch", "clips", "seed", "song_locked"],
+                          ["first_prompt", "later_prompt", "clips_already_made"], ["prompt", "unique_id"]))
+        self.assertEqual(h3_chain.LunaH3Chain.RETURN_NAMES,
+                         ("chain", "seed", "clip", "frames", "seconds", "prompt", "is_first_clip"))
+        t = h3_chain.LunaH3ChainContinue.INPUT_TYPES()
+        self.assertEqual((list(t["required"]), list(t["optional"])),
+                         (["chain", "overlap", "latent", "name", "keep_look_of_clip_1"], ["first_image", "vae"]))
+        self.assertEqual(h3_chain.LunaH3ChainContinue.RETURN_NAMES, ("latent", "low_res_head", "start_image"))
+        t = h3_chain.LunaH3ChainRemember.INPUT_TYPES()
+        self.assertEqual((list(t["required"]), list(t["optional"])),
+                         (["chain", "overlap", "latent", "name"], ["low_res_latent", "save_whole_clip"]))
+        self.assertEqual(h3_chain.LunaH3ChainRemember.RETURN_NAMES, ("saved",))
+        t = h3_chain.LunaH3ChainJoin.INPUT_TYPES()
+        self.assertEqual(list(t), ["required"])
+        self.assertEqual(list(t["required"]), ["chain", "overlap", "images", "audio", "saved"])
+        self.assertEqual(h3_chain.LunaH3ChainJoin.RETURN_NAMES, ("images", "audio", "clip_audio"))
+        for node in (h3_chain.LunaH3ChainContinue, h3_chain.LunaH3ChainRemember, h3_chain.LunaH3ChainJoin):
+            self.assertIn("22, 39, 90, 141, 192", node.INPUT_TYPES()["required"]["overlap"][1]["tooltip"])
+
+
 
 _META_BATCH = Path(__file__).resolve().parents[2] / "Luna-Media-Tools" / "meta_batch.py"
 

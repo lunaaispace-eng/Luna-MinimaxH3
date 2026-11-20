@@ -383,6 +383,22 @@ def load_latent(safetensors_path: Path) -> dict:
     return out
 
 
+LOOP_FPS = 24.0
+
+
+def check_fps(fps) -> float:
+    """Luna-H3-LoopEnd works at 24 fps only (SPEC 1): its trims and audio windows divide by 24. Any other rate raises
+    instead of being assumed to be 24."""
+    try:
+        rate = float(24.0 if fps is None else fps)
+    except (TypeError, ValueError):
+        raise ValueError(f"{LOG} fps must be a number; Luna-H3-LoopEnd works at 24 fps only.") from None
+    if abs(rate - LOOP_FPS) > 1e-6:
+        raise ValueError(f"{LOG} fps is {rate:g}, but Luna-H3-LoopEnd works at 24 fps only: its trims and audio "
+                         f"windows are counted at H3's 24 fps. Set fps to 24.")
+    return rate
+
+
 def trim_to_plan(images: torch.Tensor, plan: dict) -> torch.Tensor:
     """Cut the hidden head and the alignment tail: frames [trim, trim + keep) of the decoded batch.
 
@@ -1015,7 +1031,9 @@ class LunaH3LoopEnd(io.ComfyNode):
                                 tooltip="This scene's sampled latent (an H3 video + audio pair is "
                                         "saved stream by stream)."),
                 io.Float.Input("fps", default=24.0, min=1.0, max=240.0, step=0.01, optional=True,
-                               tooltip="Frame rate of `images`, for the mp4 and the manifest."),
+                               tooltip="Frame rate of `images`, for the mp4 and the manifest. Must be 24: the "
+                                       "trims and the audio windows are counted at H3's 24 fps, so any other "
+                                       "rate stops the run with an error."),
                 io.Combo.Input(
                     "memory_policy", options=list(MEMORY_POLICIES), default="off", optional=True,
                     tooltip="Applied once the scene is on disk, before the next one starts. "
@@ -1053,6 +1071,7 @@ class LunaH3LoopEnd(io.ComfyNode):
     @classmethod
     def execute(cls, flow, state, images=None, audio=None, latent=None, fps=24.0,
                 memory_policy="off", **join_settings):
+        check_fps(fps)
         index = int(state["scene_index"])
         count = int(state["scene_count"])
         root = run_dir(state["run_name"])

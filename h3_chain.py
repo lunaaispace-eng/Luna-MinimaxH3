@@ -9,7 +9,8 @@ The song settings live on Luna-H3-AssetLoader's sound card (2026-11-03: the sett
 in the asset loader, not in the chain): Luna-H3-Chain -> the loader's `chain` input gives only the clip number; the card's Start, Shot and
 overlap stay the user's. The loader's `overlap` output feeds ChainContinue, ChainRemember and ChainJoin.
 
-Overlap: 22, 39, 90, 141 or 192 frames, all 5 + 17k, so the copied run is 2 + 5k whole video latents starting on a
+Overlap: 22, 39, 90, 141 or 192 frames (the shared list, luna_units.OVERLAPS; any other value snaps to the nearest with
+a warning, and one that snaps to 0 stops the run), all 5 + 17k, so the copied run is 2 + 5k whole video latents starting on a
 one-frame latent. 39 + 51k frames also land on whole 40 Hz audio steps (39 frames = 65); 22 frames are 36.67, so 22 is
 allowed only with the song locked, when the previous clip's sound is not copied. A mask already on the latent (a
 locked song) is kept outside the head.
@@ -40,11 +41,20 @@ except ImportError:   # imported outside ComfyUI (tests)
         def __init__(self, message):
             self.message = message
 
+try:
+    from .luna_units import OVERLAPS as _UNIT_OVERLAPS, snap_overlap
+except ImportError:  # imported flat by the unit tests
+    from luna_units import OVERLAPS as _UNIT_OVERLAPS, snap_overlap
+
 LOG = "[Luna-H3-Chain]"
 FPS = 24
 AUDIO_HZ = 40
-OVERLAPS = ("22", "39", "90", "141", "192")
+# The shared overlap list (luna_units.OVERLAPS) without 0: 0 is the first clip's, and a chain needs an overlap.
+OVERLAPS = tuple(str(o) for o in _UNIT_OVERLAPS if o > 0)
 LOCKED_ONLY = 22   # not a whole number of audio steps
+OVERLAP_TIP = ("Frames each clip shares with the one before: Luna-H3-AssetLoader overlap (its sound card). One of "
+               "22, 39, 90, 141, 192; any other value snaps to the nearest with a warning in the console; one that "
+               "snaps to 0 stops the run. 22 only with song_locked on (Luna-H3-Chain).")
 FOLDER = "luna_h3_chain"
 CHAIN = "LUNA_H3_CHAIN"
 SAVED = "LUNA_H3_CHAIN_SAVED"
@@ -105,10 +115,18 @@ def _overlap(chain, overlap, who):
     """The overlap from Luna-H3-AssetLoader's sound card, checked against this chain."""
     if overlap is None:
         raise ValueError(f"{LOG} {who}: connect Luna-H3-AssetLoader overlap to overlap.")
-    n = int(overlap)
-    if str(n) not in OVERLAPS:
-        raise ValueError(f"{LOG} {who}: the overlap is {n} frames; set the sound card's overlap on Luna-H3-AssetLoader to "
-                         f"one of {', '.join(OVERLAPS)} (a song must be loaded on it).")
+    try:
+        n, warning = snap_overlap(overlap)
+    except (TypeError, ValueError):
+        raise ValueError(f"{LOG} {who}: the overlap {ascii(overlap)} is not a number of frames; connect "
+                         f"Luna-H3-AssetLoader overlap to overlap.") from None
+    if n == 0:
+        # 0 is the first clip's overlap; every later clip copies a head, and video_steps(0) would be negative.
+        raise ValueError(f"{LOG} {who}: the overlap is {overlap} frames, which is 0 on the overlap list; a chain "
+                         f"needs an overlap. Set the sound card's overlap on Luna-H3-AssetLoader to one of "
+                         f"{', '.join(OVERLAPS)} (a song must be loaded on it).")
+    if warning:
+        print(f"{LOG} {who}: WARNING: {warning}")
     if n >= chain["frames"]:
         raise ValueError(f"{LOG} {who}: the overlap ({n} frames) must be shorter than a clip ({chain['frames']} frames).")
     if n == LOCKED_ONLY and not chain["song_locked"]:
@@ -233,7 +251,7 @@ class LunaH3ChainContinue:
             "required": {
                 "chain": (CHAIN, {"tooltip": "From Luna-H3-Chain."}),
                 "overlap": ("INT", {"forceInput": True,
-                    "tooltip": "Frames each clip shares with the one before: Luna-H3-AssetLoader overlap (its sound card)."}),
+                    "tooltip": OVERLAP_TIP}),
                 "latent": ("LATENT", {"tooltip": "This clip's H3 audio+video latent before sampling, after the song lock."}),
                 "name": ("STRING", {"default": "chain",
                     "tooltip": "Same name as on Luna-H3-ChainRemember. The endings sit in output/luna_h3_chain/<name>/."}),
@@ -330,7 +348,7 @@ class LunaH3ChainRemember:
             "required": {
                 "chain": (CHAIN, {"tooltip": "From Luna-H3-Chain."}),
                 "overlap": ("INT", {"forceInput": True,
-                    "tooltip": "Frames each clip shares with the one before: Luna-H3-AssetLoader overlap (its sound card)."}),
+                    "tooltip": OVERLAP_TIP}),
                 "latent": ("LATENT", {"tooltip": "The sampled latent of this clip: Luna-H3-Sampler latent."}),
                 "name": ("STRING", {"default": "chain", "tooltip": "Same name as on Luna-H3-ChainContinue."}),
             },
@@ -395,7 +413,7 @@ class LunaH3ChainJoin:
             "required": {
                 "chain": (CHAIN, {"tooltip": "From Luna-H3-Chain."}),
                 "overlap": ("INT", {"forceInput": True,
-                    "tooltip": "Frames each clip shares with the one before: Luna-H3-AssetLoader overlap (its sound card)."}),
+                    "tooltip": OVERLAP_TIP}),
                 "images": ("IMAGE", {"tooltip": "Decoded frames of this clip."}),
                 "audio": ("AUDIO", {"tooltip": "Sound of this clip: the song window or the decoded audio."}),
                 "saved": (SAVED, {"tooltip": "From Luna-H3-ChainRemember. The next clip starts only after the ending is saved."}),

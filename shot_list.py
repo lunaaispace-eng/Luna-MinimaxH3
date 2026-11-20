@@ -12,7 +12,10 @@ the H3 node's `length`, `prompt` -> the prompt writer.
 
 from __future__ import annotations
 
-from .shot_plan import clock, plan_scenes
+try:
+    from .shot_plan import clock, plan_scenes
+except ImportError:  # imported flat by the unit tests
+    from shot_plan import clock, plan_scenes
 
 NODE = "Luna-H3-ShotList"
 GRIDS = {"H3 (24 fps, 17k+5)": "h3", "LTX (25 fps, 8k+1)": "ltx", "free (24 fps)": "free"}
@@ -29,8 +32,12 @@ class LunaShotList:
         "Scenes of different lengths over one song, from a script — one scene per run.\n\n"
         "Write one scene per line: `start | length | prompt`. Start is the song time "
         "(m:ss.xx or seconds); leave it empty and the scene follows the previous one, "
-        "sharing `overlap` frames with it. Length is seconds (5.17) or frames (124f) and "
-        "lands on the grid's nearest count. A JSON list of scenes works too. The table "
+        "sharing `overlap` frames with it. Length is seconds (5.17) or frames (124f): seconds "
+        "become whole frames (half up), then the count rounds up onto the grid, as on "
+        "Luna-H3-Canvas; past 362 frames on H3 `info` warns, nothing is cut. Overlap is one "
+        "of 0, 22, 39, 90, 141, 192 frames; any other value snaps to the nearest, with a "
+        "warning in `info`. A written start inside the scene before snaps its overlap the "
+        "same way and moves to match. A JSON list of scenes works too. The table "
         "under the script shows every scene's song window and lets you edit, add and "
         "remove rows; click a row to make it the scene this run makes.\n\n"
         "Automation: set `scene`'s control to increment and queue as many runs as there "
@@ -47,14 +54,16 @@ class LunaShotList:
     OUTPUT_TOOLTIPS = (
         "The scene this run makes, counting from 1.",
         "How many scenes the script has.",
-        "This scene's frame count, on the grid. Wire it to the H3 node's length.",
+        "This scene's frame count, rounded up onto the grid (past 362 on H3: a warning in info, "
+        "not a cut). Wire it to the H3 node's length.",
         "This scene's length in seconds, frames / fps. Wire it to Luna-H3-AssetLoader's seconds "
         "(or Luna-H3-Canvas's duration_seconds).",
         "Where in the song this scene starts, in seconds. Wire it to Luna-H3-AssetLoader's song_start.",
         "This scene's prompt text from the script (may be empty).",
-        "How many frames this scene shares with the one before it (0 for scene 1 and for a "
-        "scene with its own start that leaves a gap).",
-        "One line about this scene, for a note or a log.",
+        "How many frames this scene shares with the one before it, one of 22, 39, 90, 141, 192 "
+        "(0 for scene 1 and for a scene with its own start that leaves a gap).",
+        "One line about this scene, for a note or a log, with any warning: an overlap snapped "
+        "onto the list, a moved start, a count past 362 frames.",
     )
 
     @classmethod
@@ -73,13 +82,14 @@ class LunaShotList:
             "grid": (list(GRIDS), {
                 "default": "H3 (24 fps, 17k+5)",
                 "tooltip": "Frame counts the model accepts, and its frame rate. Every length "
-                           "lands on the nearest count."}),
+                           "rounds up onto the next count (H3: 17k+5 at 24 fps)."}),
             "overlap": ("INT", {
                 "default": 22, "min": 0, "max": 361, "step": 1,
-                "tooltip": "Frames a scene without its own start shares with the one before "
-                           "(H3: 5, 22 or 39 fit its grid). The song steps back this much at "
-                           "each cut, so a continuation lines up. 0 = back to back. An "
-                           "'overlap:' line in the script wins."}),
+                "tooltip": "Frames a scene without its own start shares with the one before: "
+                           "one of 0, 22, 39, 90, 141, 192 (the shared list); any other value "
+                           "snaps to the nearest, with a warning in info. The song steps back "
+                           "this much at each cut, so a continuation lines up. 0 = back to "
+                           "back. An 'overlap:' line in the script wins. Goes out on overlap."}),
         }}
 
     def pick(self, script, scene=1, grid="H3 (24 fps, 17k+5)", overlap=22):
@@ -99,6 +109,8 @@ class LunaShotList:
             info += f", sharing {s['overlap']} frames with scene {n - 1}"
         if s["frames"] != s["asked"]:
             info += f"; asked {s['asked']} frames, the grid gives {s['frames']}"
+        for warning in plan.get("warnings", []) + s.get("warnings", []):
+            info += f"; WARNING: {warning}"
         print(f"[{NODE}] {info}")
         return {"ui": {"luna_shot": [n]},
                 "result": (n, len(scenes), s["frames"], float(s["seconds"]), float(s["start"]),
@@ -123,7 +135,7 @@ if PromptServer is not None:
         if not isinstance(script, str) or len(script) > 1_000_000:
             return web.json_response({"error": "the script is not text"}, status=400)
         try:
-            overlap = int(body.get("overlap", 22))
+            overlap = float(body.get("overlap", 22))      # plan_scenes snaps it onto the shared list
             plan = plan_scenes(script, GRIDS.get(body.get("grid"), "h3"), overlap)
         except (ValueError, TypeError) as e:
             return web.json_response({"error": str(e)})

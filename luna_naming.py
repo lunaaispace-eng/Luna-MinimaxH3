@@ -7,6 +7,8 @@
   each one with the target row's tag, and an @ name with no such item warns.
 - A brief carries the map as one names line ("@ names: @image1 = <Picture 2>; …"). `read_names_line` reads it back, so the
   map a writer shows its model and the map it replaces with are the same one, also after Luna-H3-RefsOut's switches.
+- `inventory` writes the brief of a loader's `refs["items"]` for what is sent and what the reader can take (Luna-H3-AssetLoader,
+  Luna-H3-RefsOut and the writers use the one text).
 - A position is an item's 1-based place among what is sent of its kind. Positions do not depend on the row; the row only
   renders them. Audio positions follow MiniMax's order (each clip's sound right before its clip, then the standalone sounds).
 - Rows:
@@ -130,6 +132,35 @@ def remake(naming: dict, pictures=True, clips=True, clip_sound=True, sounds=True
     return make(naming.get("row") or "minimax", pics, vids, snds)
 
 
+def without_sound(naming: dict | None) -> dict | None:
+    """The naming for a reader that cannot take sound (a writer route without audio): every sound is not sent to it, and
+    every picture and clip keeps its number. A naming read from a names line (no cards) gets the same, entry by entry."""
+    if naming is None:
+        return None
+    if isinstance(naming.get("cards"), dict):
+        return remake(naming, clip_sound=False, sounds=False)
+    out = dict(naming)
+    out["map"] = {k: (None if k.startswith("@audio") else v) for k, v in (naming.get("map") or {}).items()}
+    return out
+
+
+def placed(naming: dict | None, kind: str = "image", before: int = 0, keep: int | None = None) -> dict | None:
+    """The naming after a node places the sent items of one kind among its own: `keep` = how many of them it really sends
+    (the rest is dropped: not sent), `before` = how many items of that kind it sends ahead of them (a first frame), so each
+    kept item's position moves up by `before`. Other kinds are unchanged. The result cannot be remade (no cards)."""
+    if naming is None:
+        return None
+    out = dict(naming)
+    m = {}
+    for key, entry in (naming.get("map") or {}).items():
+        if entry is not None and entry[0] == kind:
+            pos = entry[1]
+            entry = None if keep is not None and pos > keep else (kind, pos + int(before))
+        m[key] = entry
+    out["map"], out["cards"] = m, None
+    return out
+
+
 def from_refs(refs) -> dict | None:
     """The `naming` payload carried in a LUNA_H3_REFS dict, or None when there is none (older loaders)."""
     naming = refs.get("naming") if isinstance(refs, dict) else None
@@ -160,7 +191,8 @@ def resolve(name: str, naming: dict | None = None, row: str | None = None, count
             return None, _missing(key, kind, (naming.get("counts") or {}).get(kind))
         entry = naming["map"][key]
         if entry is None:
-            return None, f"{key} is not sent to the model as a reference (it sits on the shot or is switched off)."
+            return None, (f"{key} is not sent to the model as a reference (it sits on the shot, is switched off, or is a "
+                          f"sound on a route that takes none).")
         kind, pos = entry
     else:
         if counts is None:
@@ -251,6 +283,11 @@ def pick(text: str | None = None, refs=None) -> dict | None:
     return read
 
 
+def drop_names_line(text: str) -> str:
+    """`text` without its names line (to rebuild a brief around it); the text as it is when it has none."""
+    return _LINE.sub("", text or "")
+
+
 def put_names_line(text: str, naming: dict | None, row: str | None = None) -> str:
     """`text` with its names line rendered in `row` (the model's row): replaced where it is, else added on a new line."""
     line = names_line(naming, row)
@@ -259,6 +296,52 @@ def put_names_line(text: str, naming: dict | None, row: str | None = None) -> st
     if _LINE.search(text or ""):
         return _LINE.sub(lambda _m: line, text, count=1)
     return f"{text}\n{line}" if text else line
+
+
+def inventory(items: dict, naming: dict | None = None, row: str = "minimax", *, pictures=True, clips=True,
+              clip_sound=True, sounds=True, song=True, hear=True) -> str:
+    """The brief of a loader's `refs["items"]`, in MiniMax's numbering: what the model receives, one line per item.
+
+    items: one description per item WITHOUT its tag ({"images", "videos", "video_audios" (one bool per clip: it has a sound),
+    "audios", "song", "vocals" (a line or ""), "picture_warning", "extra"}); a key left out is empty.
+    pictures, clips, clip_sound, sounds, song: what the model receives (Luna-H3-RefsOut's switches). Off is not sent, and what
+    follows it moves up a number, as `remake` does. The vocal stem follows `song`.
+    hear: False when the reader of the brief cannot take sound (a writer route without audio). The sound lines (each clip's
+    sound, the standalone sounds, the song, the vocal stem) leave the brief and the names line gives each sound as not sent
+    (`without_sound`); every other number stays as the model receives it.
+    naming: the map for the names line, already remade for the switches; rendered in `row`."""
+    items = items if isinstance(items, dict) else {}
+    images = (items.get("images") or []) if pictures else []
+    videos = (items.get("videos") or []) if clips else []
+    v_audio = items.get("video_audios") or []
+    standalone = (items.get("audios") or []) if sounds else []
+    parts = []
+    if images:
+        parts.append("Reference images, in order: "
+                     + "; ".join(f"<Picture {i}> = {d}" for i, d in enumerate(images, 1)) + ".")
+        if items.get("picture_warning"):
+            parts.append(items["picture_warning"])
+    n_audio = 0
+    for k, desc in enumerate(videos, 1):
+        if clip_sound and k - 1 < len(v_audio) and v_audio[k - 1]:
+            n_audio += 1
+            if hear:
+                parts.append(f"<Audio {n_audio}> = the soundtrack of <Video {k}>.")
+        parts.append(f"<Video {k}> = {desc}.")
+    for desc in standalone:
+        n_audio += 1
+        if hear:
+            parts.append(f"<Audio {n_audio}> = {desc}.")
+    if standalone and not images and not videos:
+        parts.append("WARNING: MiniMax H3 does not accept reference sounds without a reference "
+                     "picture or clip.")
+    at_line = names_line(naming if hear else without_sound(naming), row) if naming else ""
+    if at_line:
+        parts.append(at_line)
+    if song and hear:
+        parts += [items[k] for k in ("song", "vocals") if items.get(k)]
+    parts += [x for x in (items.get("extra") or []) if x]
+    return " ".join(parts)
 
 
 def mismatch(preset_row: str | None, refs_row: str | None) -> str:

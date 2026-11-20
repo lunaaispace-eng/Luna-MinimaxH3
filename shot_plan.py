@@ -13,10 +13,17 @@ analysis can write it:
 
 Each line is `start | length | prompt`.
   * start: m:ss.xx, h:mm:ss or plain seconds. Empty = straight after the previous
-    scene, sharing `overlap` frames with it (scene 1: the `start:` setting, else 0).
-  * length: seconds (5.17, 5.17s, 0:05.17) or frames (124f, 124 frames). Snapped to the
-    grid's nearest count.
+    scene, sharing `overlap` frames with it (scene 1: the `start:` setting, else 0). A
+    written start inside the previous scene shares frames with it: that overlap snaps
+    to the nearest value of the shared list (luna_units.OVERLAPS) and the start moves to
+    match, with a warning. A start at or after the previous end is a gap: overlap 0.
+  * length: seconds (5.17, 5.17s, 0:05.17) or frames (124f, 124 frames). Seconds become
+    whole frames half up, then every length rounds UP onto the grid (luna_units, the rule
+    Luna-H3-Canvas uses); on H3 a count past 362 frames warns and is kept.
   * prompt: everything after the second |, may be empty.
+
+`overlap` (the argument or a script line) snaps to the nearest value of the shared list
+(0, 22, 39, 90, 141, 192 frames) with a warning.
 
 A JSON list is accepted too, for tools: [{"start": 12, "seconds": 5.17, "prompt": "..."},
 {"frames": 124}] or {"overlap": 22, "scenes": [...]}.
@@ -27,7 +34,13 @@ from __future__ import annotations
 import json
 import re
 
-GRIDS = {"h3": (24, 17, 5), "ltx": (25, 8, 1), "free": (24, 1, 0)}   # fps, step, phase
+try:
+    from .luna_units import frames_up, frames_warning, snap_overlap, whole_frames
+except ImportError:  # imported flat by the unit tests
+    from luna_units import frames_up, frames_warning, snap_overlap, whole_frames
+
+# fps, step, phase. The step and phase are luna_units.GRIDS; the fps stays per grid (h3 24, ltx 25, free 24).
+GRIDS = {"h3": (24, 17, 5), "ltx": (25, 8, 1), "free": (24, 1, 0)}
 
 
 def grid_fps(grid: str) -> int:
@@ -35,16 +48,8 @@ def grid_fps(grid: str) -> int:
 
 
 def snap(frames: int, grid: str) -> int:
-    """Nearest frame count on the grid (n % step == phase), never below the smallest."""
-    _, step, phase = GRIDS.get(grid, GRIDS["h3"])
-    n = max(1, int(round(frames)))
-    if step == 1:
-        return n
-    lo = n - ((n - phase) % step)
-    if lo < max(phase, 1):
-        lo = phase if phase >= 1 else step
-    hi = lo + step
-    return hi if (n - lo) > (hi - n) else lo
+    """The frame count on the grid at or above `frames` (luna_units.frames_up), never below the smallest."""
+    return frames_up(frames, grid if grid in GRIDS else "h3")
 
 
 def parse_time(text: str) -> float:
@@ -71,7 +76,7 @@ def parse_length(text: str, fps: int) -> tuple:
     m = _FRAMES.match(text)
     if m:
         return int(m.group(1)), "frames"
-    return int(round(parse_time(text) * fps)), "seconds"
+    return whole_frames(parse_time(text), fps), "seconds"
 
 
 def _rows_from_text(script: str) -> tuple:
@@ -122,9 +127,10 @@ def _rows_from_json(data) -> tuple:
 
 
 def plan_scenes(script: str, grid: str = "h3", overlap_frames: int = 22) -> dict:
-    """The script -> {"scenes": [...], "fps": f, "overlap": n}. Raises ValueError with
-    the line or scene that is wrong. A `overlap:` line in the script wins over the
-    argument; so does `start:` for scene 1."""
+    """The script -> {"scenes": [...], "fps": f, "overlap": n, "warnings": [...]}. Raises
+    ValueError with the line or scene that is wrong. A `overlap:` line in the script wins
+    over the argument; so does `start:` for scene 1. Each scene carries its own
+    "warnings" (a moved start, a count past H3's trained length); all are ASCII."""
     fps = grid_fps(grid)
     text = (script or "").strip()
     if not text:
@@ -139,14 +145,20 @@ def plan_scenes(script: str, grid: str = "h3", overlap_frames: int = 22) -> dict
         settings, rows = _rows_from_text(text)
     if not rows:
         raise ValueError("the script has no scenes")
-    overlap = int(overlap_frames)
+    overlap = overlap_frames
     if "overlap" in settings:
         try:
-            overlap = int(float(settings["overlap"]))
+            overlap = float(settings["overlap"])
         except ValueError:
             raise ValueError(f"cannot read overlap '{settings['overlap']}'") from None
+    try:
+        overlap = float(overlap)
+    except (TypeError, ValueError):
+        raise ValueError(f"cannot read overlap {ascii(overlap)}") from None
     if overlap < 0:
         raise ValueError("overlap cannot be negative")
+    overlap, overlap_note = snap_overlap(overlap)
+    warnings = [overlap_note] if overlap_note else []
     first = parse_time(settings["start"]) if "start" in settings else 0.0
 
     scenes, prev = [], None
@@ -155,16 +167,17 @@ def plan_scenes(script: str, grid: str = "h3", overlap_frames: int = 22) -> dict
         try:
             asked, unit = parse_length(r["length"], fps)
         except ValueError as e:
-            raise ValueError(f"{where}: length — {e}") from None
+            raise ValueError(f"{where}: length - {e}") from None
         if asked <= 0:
             raise ValueError(f"{where}: length must be more than 0")
         frames = snap(asked, grid)
         seconds = frames / fps
+        notes = []
         if r["start"]:
             try:
                 start = parse_time(r["start"])
             except ValueError as e:
-                raise ValueError(f"{where}: start — {e}") from None
+                raise ValueError(f"{where}: start - {e}") from None
             auto = False
         elif prev is None:
             start, auto = first, True
@@ -173,13 +186,35 @@ def plan_scenes(script: str, grid: str = "h3", overlap_frames: int = 22) -> dict
             if start <= prev["start"]:
                 raise ValueError(f"{where}: an overlap of {overlap} frames is as long as scene "
                                  f"{prev['scene']}; the song would not move on")
-        shared = 0 if prev is None else max(0, int(round((prev["start"] + prev["seconds"] - start) * fps)))
+        shared = 0
+        if prev is not None and auto:
+            shared = overlap
+        elif prev is not None:
+            prev_end = prev["start"] + prev["seconds"]
+            written = whole_frames(prev_end - start, fps) if start < prev_end else 0
+            if written > 0:
+                # A written start inside the previous scene: its overlap goes onto the shared list, and the start
+                # moves so the scene shares exactly that many frames.
+                shared, _ = snap_overlap(written)
+                if shared != written:
+                    moved = prev_end - shared / fps
+                    if moved <= prev["start"]:
+                        raise ValueError(f"{where}: the start {start:.3f} s shares {written} frames with scene "
+                                         f"{prev['scene']}; the nearest overlap on the list, {shared} frames, is "
+                                         f"as long as that scene")
+                    notes.append(f"scene {k + 1}: the start {start:.3f} s shares {written} frames with scene "
+                                 f"{prev['scene']}, not on the overlap list; {shared} frames are used and the "
+                                 f"start moves to {moved:.3f} s")
+                    start = moved
+        warning = frames_warning(frames, grid)
+        if warning:
+            notes.append(f"scene {k + 1}: {warning}")
         s = {"scene": k + 1, "line": r["line"], "start": start, "seconds": seconds,
              "frames": frames, "asked": asked, "unit": unit, "prompt": r["prompt"],
-             "auto_start": auto, "overlap": shared}
+             "auto_start": auto, "overlap": shared, "warnings": notes}
         scenes.append(s)
         prev = s
-    return {"scenes": scenes, "fps": fps, "overlap": overlap,
+    return {"scenes": scenes, "fps": fps, "overlap": overlap, "warnings": warnings,
             "end": max(s["start"] + s["seconds"] for s in scenes)}
 
 

@@ -20,7 +20,9 @@ lock file gives only timing, as chain_driver's audio_mode generated). Reference 
 names for the Luna-H3-AssetLoaders, not loaded here.
 
 Scene fields: start, end (seconds in the song, required), prompt, overlap (39 | 90 | 141 | 192,
-default 39), join ("carried" default | "fresh"; scene 0 is always fresh), preroll_frames (fresh scenes,
+default 39; another value snaps to the nearest of luna_units.OVERLAPS with a warning, and a value that is or
+snaps to 22, or to 0 on a carried scene, raises: Beta's masked context has neither), join ("carried"
+default | "fresh"; scene 0 is always fresh), preroll_frames (fresh scenes,
 default 0), seeds ([a, b], default [1111, 2222]), selflift_seed (default seeds[0]), profile,
 references (1 to 4 image paths, or {"previous_last_frame": true}).
 
@@ -44,14 +46,18 @@ from comfy_api.latest import io
 try:
     from .h3_loop import LOG, LoopState, run_dir, stage_reference
     from .h3_loop_guide import GuideType
+    from .luna_units import GRIDS, frames_up, frames_warning, snap_overlap
 except ImportError:  # imported flat by the unit tests
     from h3_loop import LOG, LoopState, run_dir, stage_reference
     from h3_loop_guide import GuideType
+    from luna_units import GRIDS, frames_up, frames_warning, snap_overlap
 
 logger = logging.getLogger("Luna.H3LoopScene")
 
 FPS = 24
+# The overlaps Beta's masked context takes: the shared list (luna_units.OVERLAPS) without 0 and 22.
 OVERLAPS = (39, 90, 141, 192)
+H3_STEP = GRIDS["h3"][0]
 AUDIO_MODES = ("song_lock", "generated")
 MAX_REFS = 4
 DEFAULT_SEEDS = (1111, 2222)
@@ -120,9 +126,13 @@ def calculate(beta, start: float, end: float, source_duration: float,
         plan = beta.plan_masked_context(int(predecessor["token_count"]),
                                         int(predecessor["tail_padding_frames"]), int(overlap))
     warm = plan["warmup_frames"] if plan else int(preroll)
+    # Beta's own count, not its cut: its default max_frame_count (362) raises above it, but our rule is a warning past
+    # 362 (SPEC 1, luna_units). The cap is the song in frames plus the warm-up, rounded up onto the grid, plus one grid
+    # step, so no scene of the song reaches it.
+    cap = frames_up(float(source_duration) * FPS + warm, "h3") + H3_STEP
     t = beta.calculate_minimax_h3_timing(
         start, end, warmup_frames=warm, cooldown_frames=0, source_start_seconds=start,
-        source_duration_seconds=source_duration, pad_warmup=plan is not None).to_dict()
+        source_duration_seconds=source_duration, pad_warmup=plan is not None, max_frame_count=cap).to_dict()
     padding = max(0, t["h3_frame_count"] - round(t["actual_warmup_seconds"] * FPS) - t["final_frame_count"])
     return {"context_plan": plan, "timing": t, "tail_padding_frames": padding}
 
@@ -138,12 +148,10 @@ def scene_settings(scene: dict, index: int) -> dict:
         raise ValueError(f"{where}: 'start' and 'end' (seconds in the song) are required numbers.") from None
     if not (math.isfinite(start) and math.isfinite(end) and 0 <= start < end):
         raise ValueError(f"{where}: need 0 <= start < end, got {start}, {end}.")
-    overlap = scene.get("overlap", 39)
-    if overlap not in OVERLAPS:
-        raise ValueError(f"{where}: overlap must be one of {OVERLAPS}, got {overlap!r}.")
     join = scene.get("join", "carried")
     if join not in ("carried", "fresh"):
         raise ValueError(f"{where}: join must be 'carried' or 'fresh', got {join!r}.")
+    overlap, overlap_warning = scene_overlap(scene.get("overlap", 39), where, carried=index > 0 and join != "fresh")
     seeds = scene.get("seeds", list(DEFAULT_SEEDS))
     if (not isinstance(seeds, list) or len(seeds) != 2
             or any(type(s) is not int or not 0 <= s < 2 ** 64 for s in seeds)):
@@ -164,7 +172,25 @@ def scene_settings(scene: dict, index: int) -> dict:
             raise ValueError(f"{where}: the first scene has no previous last frame.")
     return {"start": start, "end": end, "overlap": overlap, "join": join, "seeds": seeds,
             "selflift_seed": sl_seed, "preroll_frames": preroll, "references": refs,
-            "profile": scene.get("profile")}
+            "profile": scene.get("profile"), "overlap_warning": overlap_warning}
+
+
+def scene_overlap(value, where: str, carried: bool) -> tuple[int, str]:
+    """A scene's overlap -> (frames, warning or ""). Off the shared list it snaps to the nearest value with a warning
+    (luna_units.snap_overlap). Beta's masked context takes 39, 90, 141 or 192 only: a carried scene whose value is or
+    snaps to 0 or 22 raises. 0 is kept on a scene that carries nothing (the first scene, a fresh join); 22 raises
+    everywhere, since no scene of this node can use it."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{where}: overlap must be a number of frames, one of {OVERLAPS}, got {ascii(value)}.")
+    try:
+        n, warning = snap_overlap(value)
+    except ValueError:
+        raise ValueError(f"{where}: overlap must be a number of frames, one of {OVERLAPS}, got {ascii(value)}.") from None
+    if n == 22 or (n == 0 and carried):
+        got = ascii(value) if not warning else f"{ascii(value)}, which snaps to {n} on the overlap list"
+        raise ValueError(f"{where}: overlap {got}; Luna-H3-LoopScene takes {', '.join(map(str, OVERLAPS))} "
+                         f"frames only (Beta's masked context has no {n}). Set the scene's overlap to one of them.")
+    return n, warning
 
 
 def check_contiguous(scenes: list[dict], audio_mode: str) -> None:
@@ -379,8 +405,12 @@ class LunaH3LoopScene(io.ComfyNode):
                 "Audio modes: song_lock (the song's window conditions H3 and is locked) or generated (H3 makes "
                 "the audio; the lock file gives only timing). Reference images are staged as input-relative "
                 "names for the Luna-H3-AssetLoaders.\n\n"
-                "Scene fields: start, end, overlap (39/90/141/192), join (carried/fresh), seeds, "
-                "selflift_seed, preroll_frames, references (image paths, or {\"previous_last_frame\": true})."
+                "Scene fields: start, end, overlap (39/90/141/192; another value snaps to the nearest of the "
+                "shared list 0, 22, 39, 90, 141, 192 with a warning; 22, or 0 on a carried scene, stops the "
+                "run), join (carried/fresh), seeds, selflift_seed, preroll_frames, references (image paths, or "
+                "{\"previous_last_frame\": true}).\n\n"
+                "Render frames are Beta's count; past 362 the console warns, nothing is cut. `seconds` is the "
+                "render length, render_frames / 24."
             ),
             inputs=[
                 LoopState.Input("state", tooltip="From Luna-H3-LoopStart."),
@@ -443,8 +473,13 @@ class LunaH3LoopScene(io.ComfyNode):
                 io.Boolean.Output(id="continuation", display_name="continuation"),
                 io.Boolean.Output(id="pass1", display_name="pass1",
                                   tooltip="The predecessor's pass-1 latent matches its final latent."),
-                io.Int.Output(id="context_frames", display_name="context_frames"),
-                io.Int.Output(id="render_frames", display_name="render_frames"),
+                io.Int.Output(id="context_frames", display_name="context_frames",
+                              tooltip="The scene's overlap in frames, Beta's masked context: 39, 90, 141 or 192 "
+                                      "(snapped onto the shared list; 0 only on a scene that carries nothing). "
+                                      "For Beta's context_frames."),
+                io.Int.Output(id="render_frames", display_name="render_frames",
+                              tooltip="Frames H3 renders for this scene (Beta's count, on 17k+5), hidden head "
+                                      "included. Past 362 the console warns; it is kept, not cut."),
                 io.Float.Output(id="trim_start", display_name="trim_start"),
                 io.Int.Output(id="keep_frames", display_name="keep_frames"),
                 io.Float.Output(id="visible_duration", display_name="visible_duration"),
@@ -460,6 +495,11 @@ class LunaH3LoopScene(io.ComfyNode):
                 # Added last, like every output since S10: saved workflows link outputs by slot number.
                 GuideType.Output(id="guide", display_name="guide",
                                  tooltip="The scene's guide for Luna-H3-GuideApply / Luna-H3-GuideClip (off: nothing)."),
+                # Appended last (SPEC 1, 2026-11-20): saved workflows link outputs by slot number.
+                io.Float.Output(id="seconds", display_name="seconds",
+                                tooltip="The render length in seconds, render_frames / 24 (124 frames -> 5.1667 s), "
+                                        "hidden head and tail included. For a node that takes seconds, such as "
+                                        "Luna-H3-AssetLoader seconds or Luna-H3-Canvas duration_seconds."),
             ],
         )
 
@@ -527,6 +567,11 @@ class LunaH3LoopScene(io.ComfyNode):
         if plan["trim_frames"] + plan["keep_frames"] > plan["render_frames"]:
             raise ValueError(f"{LOG} scene {index}: trim {plan['trim_frames']} + keep {plan['keep_frames']} "
                              f"is more than the {plan['render_frames']} rendered frames.")
+        warnings = [w for w in (s["overlap_warning"], frames_warning(plan["render_frames"], "h3")) if w]
+        if warnings:
+            plan["warnings"] = [f"scene {index}: {w}" for w in warnings]
+            for w in plan["warnings"]:
+                logger.warning("%s %s", LOG, w)
         audio = audio_window(wave, rate, t)
         refs = reference_names(s, index, root)
         logger.info("%s scene %d: %s, %d frames (trim %d, keep %d), overlap %d, pass1=%s", LOG, index,
@@ -539,7 +584,7 @@ class LunaH3LoopScene(io.ComfyNode):
             out_state, root.as_posix(), scene_number, continuation, pass1, s["overlap"],
             plan["render_frames"], float(t["final_trim_start_seconds"]), plan["keep_frames"],
             float(t["final_trim_duration_seconds"]), s["seeds"][0], s["seeds"][1], s["selflift_seed"],
-            audio, *refs, guide)
+            audio, *refs, guide, plan["render_frames"] / FPS)
 
 
 # --------------------------------------------------------------------------- Luna-H3-LoopProfile

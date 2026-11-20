@@ -90,7 +90,7 @@ def _scene(run, index=0, state=None, mode="song_lock"):
 
 OUT = ["state", "project_folder", "scene_number", "continuation", "pass1", "context_frames", "render_frames",
        "trim_start", "keep_frames", "visible_duration", "seed_1", "seed_2", "selflift_seed", "audio",
-       "ref_1", "ref_2", "ref_3", "ref_4", "guide"]
+       "ref_1", "ref_2", "ref_3", "ref_4", "guide", "seconds"]
 
 
 def _named(result):
@@ -126,7 +126,11 @@ def test_beta_check_catches_a_changed_grid():
 @pytest.mark.parametrize("change, fragment", [
     ({"start": None}, "start' and 'end"),
     ({"end": 0.0}, "0 <= start < end"),
-    ({"overlap": 40}, "overlap must be one of"),
+    ({"overlap": 22}, "takes 39, 90, 141, 192 frames only"),
+    ({"overlap": 25}, "which snaps to 22"),
+    ({"overlap": 5}, "which snaps to 0"),
+    ({"overlap": "x"}, "overlap must be a number"),
+    ({"overlap": True}, "overlap must be a number"),
     ({"join": "blend"}, "join must be"),
     ({"seeds": [1]}, "seeds must be two"),
     ({"seeds": [1, "x"]}, "seeds must be two"),
@@ -324,8 +328,74 @@ def test_scene_schema_builds():
     assert [i.id for i in schema.inputs] == ["state", "lock_audio", "audio_mode", "manual_cuts", "search_window",
                                             "time_lock", "loader_folder", "guide_mode", "guide_source",
                                             "guide_length", "guide_frame_idx", "guide_audio"]
-    assert schema.outputs[-1].get_io_type() == "LUNA_H3_GUIDE"
-    assert [o.get_io_type() for o in schema.outputs][-5:] == ["STRING"] * 4 + ["LUNA_H3_GUIDE"]
+    assert schema.outputs[-2].get_io_type() == "LUNA_H3_GUIDE"
+    assert [o.get_io_type() for o in schema.outputs][-6:] == ["STRING"] * 4 + ["LUNA_H3_GUIDE", "FLOAT"]
+    info = LunaH3LoopScene.GET_NODE_INFO_V1()
+    assert info["output_name"] == OUT and info["output"][-1] == "FLOAT"
+    assert list(info["input"]["required"]) == ["state", "lock_audio", "audio_mode"]
+
+
+# --------------------------------------------------------------------------- Build 2: seconds, overlap, 362
+
+def test_seconds_is_the_render_length(run):
+    o = _named(_scene(run, 0))
+    assert o["render_frames"] == 124                              # 0-5 s, fresh: Beta's 124
+    assert o["seconds"] == pytest.approx(124 / 24) and round(o["seconds"], 4) == 5.1667
+    assert isinstance(o["seconds"], float)
+
+
+def test_scene_overlap_off_the_list_snaps_with_a_warning(caplog):
+    s = hs.scene_settings({"start": 5, "end": 10, "overlap": 50, "references": ["a.png"]}, 1)
+    assert s["overlap"] == 39 and "Overlap 50" in s["overlap_warning"] and "39 is used" in s["overlap_warning"]
+    s["overlap_warning"].encode("ascii")
+    assert hs.scene_settings({"start": 5, "end": 10, "overlap": 192, "references": ["a.png"]}, 1)[
+        "overlap_warning"] == ""
+
+
+def test_scene_overlap_22_raises_with_the_message():
+    with pytest.raises(ValueError, match="Luna-H3-LoopScene takes 39, 90, 141, 192 frames only") as e:
+        hs.scene_settings({"start": 5, "end": 10, "overlap": 22, "references": ["a.png"]}, 1)
+    assert "no 22" in str(e.value)
+    str(e.value).encode("ascii")
+    with pytest.raises(ValueError, match="no 22"):                # 22 is no use on a first scene either
+        hs.scene_settings({"start": 0, "end": 5, "overlap": 22, "references": ["a.png"]}, 0)
+
+
+def test_scene_overlap_0_only_on_a_scene_that_carries_nothing():
+    assert hs.scene_settings({"start": 0, "end": 5, "overlap": 0, "references": ["a.png"]}, 0)["overlap"] == 0
+    fresh = {"start": 5, "end": 10, "overlap": 0, "join": "fresh", "references": ["a.png"]}
+    assert hs.scene_settings(fresh, 1)["overlap"] == 0
+    with pytest.raises(ValueError, match="no 0"):
+        hs.scene_settings(dict(fresh, join="carried"), 1)
+
+
+def test_snapped_overlap_reaches_the_node_and_the_log(run, caplog):
+    first = _named(_scene(run, 0))["state"]["plan"]
+    _write_beta_scene(run.root, 1, first["token_count"], first["tail_padding_frames"])
+    from PIL import Image
+    Image.new("RGB", (8, 8)).save(h3_loop_scene_last(run, 0))
+    scenes = json.loads(json.dumps(run.scenes))
+    scenes[1]["overlap"] = 50
+    with caplog.at_level("WARNING"):
+        o = _named(_scene(run, 1, run.state(1, scenes)))
+    assert o["context_frames"] == 39 and o["state"]["plan"]["overlap"] == 39
+    assert any("Overlap 50" in w for w in o["state"]["plan"]["warnings"])
+    assert any("Overlap 50" in r.getMessage() for r in caplog.records)
+
+
+def test_a_16_second_scene_is_rendered_past_362_with_a_warning(run, caplog):
+    scenes = [dict(run.scenes[0], end=16.0)]
+    with caplog.at_level("WARNING"):
+        o = _named(_scene(run, 0, run.state(0, scenes)))           # Beta's default cap (362) used to raise here
+    assert o["render_frames"] == 396 and o["seconds"] == pytest.approx(396 / 24)
+    assert any("past the 362 frames" in w for w in o["state"]["plan"]["warnings"])
+    assert any("past the 362 frames" in r.getMessage() for r in caplog.records)
+
+
+def test_beta_alone_still_cuts_at_362_so_the_cap_is_ours():
+    with pytest.raises(ValueError, match="exceeding the configured maximum of 362"):
+        BETA.calculate_minimax_h3_timing(0, 16, source_start_seconds=0, source_duration_seconds=30)
+    assert hs.calculate(BETA, 0, 16, 30)["timing"]["h3_frame_count"] == 396
 
 
 # --------------------------------------------------------------------------- Luna-H3-LoopProfile

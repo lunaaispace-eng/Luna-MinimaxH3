@@ -37,18 +37,26 @@ reference, `snap` documented against H3's CANVAS_MULTIPLE of 32, and the order
 fixed as aspect -> size -> snap.
 
 Sound cards (v3, 2026-10-16). A sound card holds a song and the window of it the
-shot uses: start, duration, and what to do when the window runs off the end
-(silence or loop). The window is stored in `media_state` (JSON) and comes out on
-`audio`, exactly as long as asked — when the `seconds` input is wired, that is the
-duration, so the song always matches the shot length. Window maths: media_io.
+shot uses: start, and what to do when the window runs off the end (silence or
+loop). The window is stored in `media_state` (JSON) and comes out on `audio`,
+exactly as long as the shot (frames / the shot's rate), so the song always matches
+the shot length. Sound card 1 may carry a vocal stem (`vocals`), cut to the same
+window. Window maths: media_io.
 
-Outputs `audio`, `refs`, `timeline`, `video` and `frames` sit at slots 4-8, BEFORE
-image_N. The frontend shrinks the node by removing trailing image_N slots, and
-ComfyUI maps an output to the returned tuple by index, so nothing may sit after
-the image block. Workflows saved before these five existed are migrated in the
-frontend before the graph is configured (js/luna_asset_loader.js,
-migrateWorkflowJSON) — see the 2026-10-16 decision in STATUS for why it cannot
-happen later.
+One count per run (Luna-MinimaxH3 SPEC § 1 and § 2): the shot's rate is
+luna_units.fps_for(target, clip 1's delivered rate); `frames` is the wired seconds
+(or the stored shot length) rounded UP onto the target's grid, past 362 on H3 a
+warning in the brief, never a cut. The brief, the timeline, the placements, the
+song, the vocal stem and the clip cards by shot number all use that count. The
+overlap is one node setting (`settings.overlap`; an old save takes sound card 1's).
+
+Outputs (SPEC § 2): the ten fixed outputs at slots 0-9, image_1..image_9 at 10-18 whatever
+the number of picture cards, then `fps` (19) and `vocals` (20). The frontend sends each
+link's own slot number with the prompt and ComfyUI reads that index of the returned tuple,
+so the node always has all 21 and image_count only labels the image sockets past it.
+Workflows saved before this order are migrated in the frontend before the graph is
+configured (web/luna_asset_loader.js, migrateWorkflowJSON): the older fixed outputs go in
+before image_1 as before, then the slots a save lacks are appended, so no saved link moves.
 
   video   the decoded frames of clip card V1 (whatever its role), for prompt writers
   frames  the shot length in frames, for the generation node's length and a prompt
@@ -80,12 +88,16 @@ from PIL import Image, ImageOps
 import folder_paths
 import node_helpers
 
+from . import luna_units
 from .asset_images import apply_state, conform, to_rgb
 from .asset_timeline import (ROW, check_placements, h3_tags, naming_cards, normalize_sound_role, shot_frames,
                              target_fps, target_grid, thinning_error)
-from .luna_naming import make as make_naming, names_line
+from .luna_naming import inventory, make as make_naming
 from .media_io import (FPS, clip_bytes, clip_soundtrack, decode_clip, filmstrip_jpeg, grid_frames, strip_annotation,
                        load_audio, load_audio_window, probe_media, song_shot_count, song_shot_start)
+
+WHO = "Luna-H3-AssetLoader"
+DEFAULT_OVERLAP = 22   # the node's overlap row starts here (and so did sound card 1's)
 
 MAX_IMAGES = 9  # MiniMax H3's own reference ceiling
 MAX_SOUNDS = 3  # MiniMax H3 takes three standalone sounds
@@ -172,9 +184,23 @@ _DEFAULT_ITEM = {
 }
 
 
+def _overlap_setting(data: dict, settings_raw: dict) -> tuple[int, str]:
+    """The node's overlap in frames, and a warning or "": `settings.overlap` when set, else sound card 1's overlap
+    (saves made before the node-wide row), else 22; a value off luna_units.OVERLAPS snaps to the nearest."""
+    raw = settings_raw.get("overlap")
+    if raw is None:
+        first = next((c for c in (data.get("audio") or []) if isinstance(c, dict) and c.get("file")), None)
+        raw = first.get("overlap") if first and first.get("overlap") is not None else DEFAULT_OVERLAP
+    try:
+        return luna_units.snap_overlap(float(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_OVERLAP, f"Overlap {ascii(raw)} is not a number of frames; {DEFAULT_OVERLAP} is used."
+
+
 def _parse_media(raw: str) -> dict:
     """media_state JSON -> {"audio": [card, ...]}. A card: file, start, duration
-    (seconds, 0 = to the end of the file) and fill ("silence" | "loop")."""
+    (seconds, kept for old saves; the window is the shot length), fill ("silence" | "loop"); sound card 1 also
+    `vocals` (the vocal stem's file, "" = none)."""
     try:
         data = json.loads(raw or "{}")
     except (TypeError, ValueError):
@@ -199,7 +225,10 @@ def _parse_media(raw: str) -> dict:
             "position": "shot" if c.get("position") == "shot" else "free",
             "song_start": max(0.0, float(c.get("song_start") or 0.0)),
             "shot": max(1, int(c.get("shot") or 1)),
-            "overlap": max(0, int(c.get("overlap") if c.get("overlap") is not None else 22)),
+            # Kept for old saves only: the node's overlap is `settings.overlap` (_overlap_setting).
+            "overlap": max(0, int(c.get("overlap") if c.get("overlap") is not None else DEFAULT_OVERLAP)),
+            # The vocal stem rides sound card 1 only: the same window as the song.
+            "vocals": str(c.get("vocals") or "") if not cards else "",
         })
     clips = []
     for c in (data.get("video") or [])[:MAX_VIDEOS]:
@@ -220,6 +249,10 @@ def _parse_media(raw: str) -> dict:
             "nth": max(1, int(c.get("nth") or 1)),
             "sound": "drop" if c.get("sound") == "drop" else "keep",
             "precision": "fp32" if c.get("precision") == "fp32" else "fp16",
+            # Like the song card: "free" = the clip opens at `start`; "shot" = `start` is shot 1's and shot n opens
+            # (n - 1) x (shot length - overlap) later, n being `shot` (+ the chain's clip).
+            "position": "shot" if c.get("position") == "shot" else "free",
+            "shot": max(1, int(c.get("shot") or 1)),
         })
     # Picture roles, in card order (index-aligned with image_paths). Missing = reference.
     pics = []
@@ -229,17 +262,35 @@ def _parse_media(raw: str) -> dict:
     shot = data.get("shot") if isinstance(data.get("shot"), dict) else {}
     # Node-wide settings from the ⚙ panel.
     st = data.get("settings") if isinstance(data.get("settings"), dict) else {}
+    overlap, overlap_warning = _overlap_setting(data, st)
     settings = {
         "target": st.get("target") if st.get("target") in ("h3", "ltx", "general") else "h3",
         "memory_gb": min(64.0, max(1.0, float(st.get("memory_gb") or MEMORY_CAP / 1024 ** 3))),
+        "overlap": overlap,
     }
     return {"audio": cards, "video": clips, "pictures": pics,
-            "shot_frames": max(1, int(shot.get("frames") or 124)), "settings": settings}
+            "shot_frames": max(1, int(shot.get("frames") or 124)), "settings": settings,
+            "warnings": [overlap_warning] if overlap_warning else []}
 
 
 def _clock(t: float) -> str:
     m, s = divmod(max(0.0, t), 60.0)
     return f"{int(m)}:{s:05.2f}"
+
+
+def _card_fps(c: dict, info: dict, target: str) -> float:
+    """The rate a clip card decodes at, before every-Nth: "target" the target's (General: the file's own),
+    "source" the file's own, else the number set on the card."""
+    if c["fps"] == "target":
+        return target_fps(target, info.get("fps"))
+    if c["fps"] == "source":
+        return float(info.get("fps") or FPS)
+    return float(c["fps"])
+
+
+def _delivered_fps(c: dict, info: dict, target: str) -> float:
+    """The rate of the frames a clip card delivers: its decode rate after every-Nth (media_io.decode_clip's fps)."""
+    return _card_fps(c, info, target) / max(1, int(c["nth"]))
 
 
 def _parse_state(raw: str, count: int) -> list[dict]:
@@ -282,9 +333,13 @@ class LunaAssetLoader:
         "its card number: @image2, @video1, @audio2. Each card shows its @ name and the tag H3 receives, and "
         "asset_brief states that mapping in its @ names line so nothing has to guess it.\n\n"
         "Upload a sound file and it becomes a sound card. Select it to see the whole song: "
-        "drag the window to choose the part the shot uses, drag its edges or type Start and "
-        "Duration. Wire `seconds` (for example from the canvas node) and the duration is "
-        "locked to the shot length; only the start moves. `audio` delivers exactly that window.\n\n"
+        "drag the window to choose the part the shot uses, or type its Start. The window is always the "
+        "shot length: wire `seconds` (for example from Luna-H3-Canvas) and the shot follows it; unwired, "
+        "the shot length set on the node is used. `audio` delivers exactly that window; sound card 1 may "
+        "also carry a vocal stem, cut to the same window.\n\n"
+        "`frames` is the shot length rounded UP onto the Target's grid (H3 17k+5, LTX 8k+1); past 362 "
+        "frames on H3 the brief warns and nothing is cut. The Overlap row on the node sets how many frames "
+        "each shot shares with the one before, for the song, the vocal stem and the clip cards by shot number.\n\n"
         "`video` is the frames of the first clip card and `frames` the shot length in frames, for "
         "Luna-LLMPrompt. Wire the canvas width and height and they pass straight through; unwired, "
         "picture 1's size is given. An empty loader runs and delivers nothing."
@@ -292,16 +347,24 @@ class LunaAssetLoader:
     CATEGORY = "Luna-MinimaxH3"
     FUNCTION = "load"
 
-    # Fixed outputs FIRST, growable image_N last. The frontend removes trailing
-    # slots to shrink the node, and ComfyUI maps outputs to the returned tuple by
-    # INDEX — so anything that must keep its meaning has to sit at an index that
-    # never moves. With image_N first, dropping image_3 would silently hand
-    # image_3's tensor to `images`. audio/refs/timeline (v3), video/frames (v4) and overlap (v5)
-    # are fixed too, so they sit at 4-9; old saves are moved up by the frontend migration.
-    RETURN_TYPES = ("IMAGE", "INT", "INT", "STRING", "AUDIO", "LUNA_H3_REFS", "LUNA_TIMELINE", "IMAGE", "INT",
-                    "INT") + ("IMAGE",) * MAX_IMAGES
-    RETURN_NAMES = ("images", "width", "height", "asset_brief", "audio", "refs", "timeline", "video",
-                    "frames", "overlap") + tuple(f"image_{i + 1}" for i in range(MAX_IMAGES))
+    # ComfyUI maps outputs to the returned tuple by INDEX, and the frontend sends each link's own slot number, so
+    # every output keeps its index for good: the ten fixed outputs (audio/refs/timeline v3, video/frames v4,
+    # overlap v5, moved up for old saves by the frontend migration), image_1..image_9 always all nine, then the
+    # outputs appended after them (TAIL_OUTPUTS: fps, vocals).
+    # Appended after image_9 (SPEC § 2): every run makes them (_run), every node has their sockets.
+    TAIL_OUTPUTS = {
+        "fps": ("FLOAT", "The frame rate of the clips, as FLOAT: clip card V1's delivered rate (its own fps choice, "
+                         "after every-Nth), the rate of the frames on `video`; with no clip, the shot's rate (H3 24, "
+                         "LTX 25, General 24). With every clip on 'Target' fps, frames / fps is the shot length. For "
+                         "Luna-SaveVideo's frame_rate and Luna-LLMPrompt's fps."),
+        "vocals": ("AUDIO", "Sound card 1's vocal stem, cut to exactly the song's window (same start, length and "
+                            "fill): the stem for H3's lip-sync lock (MiniMaxH3AddGuide's audio, or the loop's lock "
+                            "audio), while `audio` stays the full mix. Empty when the card has no vocal stem."),
+    }
+    RETURN_TYPES = (("IMAGE", "INT", "INT", "STRING", "AUDIO", "LUNA_H3_REFS", "LUNA_TIMELINE", "IMAGE", "INT", "INT")
+                    + ("IMAGE",) * MAX_IMAGES + tuple(t for t, _ in TAIL_OUTPUTS.values()))
+    RETURN_NAMES = (("images", "width", "height", "asset_brief", "audio", "refs", "timeline", "video",
+                     "frames", "overlap") + tuple(f"image_{i + 1}" for i in range(MAX_IMAGES)) + tuple(TAIL_OUTPUTS))
     # ComfyUI shows these when you hover an output socket, and the ⓘ panel lists
     # them too — one definition, both places, so they cannot disagree.
     OUTPUT_TOOLTIPS = (
@@ -318,34 +381,41 @@ class LunaAssetLoader:
         "receives for each reference; a warning when picture cards 1 and 2 differ in aspect ratio, which "
         "FL2VA silently fixes by stretching the first frame and cropping the last; the @ names line "
         "('@ names: @image1 = not sent; @image2 = <Picture 1>; ...': each card's @imageN, @videoN, @audioN "
-        "and the tag it becomes, 'not sent' when it sits on the shot); then what is on the shot and the song. "
+        "and the tag it becomes, 'not sent' when it sits on the shot); then the song and the vocal stem with "
+        "their jobs, what is on the shot, and the warnings (past 362 frames, a clip at another rate than the "
+        "shot, an overlap off the list). luna_naming.inventory writes it, the same text Luna-H3-RefsOut writes. "
         "For Luna-LLMPrompt's or Luna-LLMPromptAPI's asset_brief, so the writer knows which reference is which "
         "and what each @ name means. With Luna-H3-RefsOut in the graph, wire its asset_brief instead.",
-        "The song window from sound card 1: exactly the duration you set, or exactly the "
-        "seconds input when it is wired. Wire it to the save node so the finished video has "
-        "the same sound, or to an audio-sync node to make the picture follow it.",
+        "The song window from sound card 1, the full mix: exactly the shot length (frames / the shot's frame "
+        "rate), from the card's Start or its shot number. For Luna-SaveVideo's audio, so the finished video has "
+        "the same sound, and for a ref_audio socket of MiniMaxH3ReferenceToVideo (H3's reference sound).",
         "Every reference on one wire, in the order H3 numbers them (keyframes, guide clips and the locked "
-        "song are not in it): pictures, clips, their soundtracks, standalone sounds, the song window, the "
-        "brief, and `naming`, the @ names map (each card's @imageN, @videoN, @audioN to the tag H3 receives). "
+        "song are not in it): `images` with their `roles` (one word each, 'reference'), `videos`, "
+        "`video_audios`, `audios`, the song window (`song`) and its vocal stem (`vocals`, or None), "
+        "`keyframes` (the key pictures: card, frame, picture), the brief, `items` and `naming`, the @ names "
+        "map (each card's @imageN, @videoN, @audioN to the tag H3 receives), `width` and `height`. "
         "For Luna-H3-RefsOut's refs, which splits it into the ref_image, ref_video, ref_video_audio and "
         "ref_audio sockets and rebuilds the @ names line for its switches; or Luna-LLMPrompt's or "
         "Luna-LLMPromptAPI's refs.",
-        "What sits on the shot timeline and where, in frames: keyframe pictures, guide clips and "
-        "guide or locked sounds.",
+        "What sits on the shot timeline and where, in frames at the shot's rate (its `fps`): keyframe "
+        "pictures, guide clips and guide or locked sounds (the song's lock also carries the vocal stem).",
         "The frames of clip card V1 (whatever its role), decoded as the card says. For Luna-LLMPrompt's "
         "video input. Empty when no clip is loaded.",
-        "The shot length in frames: the seconds input at 24 fps when wired, else the length stored on the "
-        "node. For the H3 node's length and Luna-LLMPrompt's frames.",
-        "The overlap set on sound card 1, in frames: how many frames each shot shares with the one before "
-        "(0 with no song). For the nodes that continue a clip from the one before and cut the shared frames "
-        "off again.",
+        "The shot length in frames, one count for the whole node: the seconds input at the shot's rate "
+        "(H3 24, LTX 25, General clip 1's) when wired, else the length set on the node, rounded UP onto the "
+        "Target's grid (H3 17k+5: 5.0 s is 124; LTX 8k+1). Past 362 on H3 asset_brief warns and nothing is cut. "
+        "For MiniMaxH3ReferenceToVideo's length and Luna-LLMPrompt's frames.",
+        "The node's overlap, in frames (the Overlap row: 22, 39, 90, 141, 192; a saved value off the list snaps "
+        "to the nearest with a warning): how many frames each shot shares with the one before, for the song, "
+        "the vocal stem and the clip cards by shot number, with or without a song. For Luna-H3-ChainContinue's, "
+        "Luna-H3-ChainRemember's and Luna-H3-ChainJoin's overlap.",
     ) + tuple(
         f"Picture {i + 1} at its ORIGINAL size (only the batch is conformed), "
         f"in card order. Wire to the MiniMax H3 ref_image_{i} socket — or in FL2VA, "
         f"{'first_frame' if i == 0 else 'last_frame' if i == 1 else f'reference {i + 1}'}. "
         f"Empty when fewer than {i + 1} images are loaded."
         for i in range(MAX_IMAGES)
-    )
+    ) + tuple(tip for _, tip in TAIL_OUTPUTS.values())
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -357,7 +427,7 @@ class LunaAssetLoader:
                 }),
                 "image_count": ("INT", {
                     "default": 2, "min": 1, "max": MAX_IMAGES,
-                    "tooltip": "How many numbered outputs the node shows. Set it with the Image slots stepper at the top left of the node, beside the four fixed outputs (click the number to type one); it sits there because it is the one spot that does not slide down as sockets are added. It also follows the cards — uploading, removing or typing a file name sets it. Every change applies immediately; there is nothing to press. A socket you have wired is never removed, so disconnect it first if you want to go below it. Fewer outputs than images is useful, not a mistake: the extra pictures stay loaded and you can drag one up into an active slot, leaving the rest parked. Sockets beyond the number of loaded images stay empty.",
+                    "tooltip": "How many picture cards the node expects. All nine image sockets (image_1 to image_9) are always there, so no saved wire ever moves; the sockets past this number are labelled (spare). Set it with the Image slots stepper at the top left of the node (click the number to type one); it also follows the cards: uploading, removing or typing a file name sets it. Sockets beyond the number of loaded images stay empty.",
                 }),
             },
             "optional": {
@@ -369,11 +439,11 @@ class LunaAssetLoader:
                 # position, and a widget appended at the end shifts nothing.
                 "media_state": ("STRING", {
                     "default": "",
-                    "tooltip": "The sound cards, as JSON, written by the card UI: {\"audio\": [{\"file\": \"song.mp3\", \"start\": 42.5, \"duration\": 5.17, \"fill\": \"silence\"}]}. start and duration are seconds; duration 0 = to the end of the file; fill is what happens when the window runs past the end (silence or loop).",
+                    "tooltip": "The cards and the node settings, as JSON, written by the card UI: {\"audio\": [{\"file\": \"song.mp3\", \"vocals\": \"song_vocals.wav\", \"start\": 42.5, \"fill\": \"silence\"}], \"settings\": {\"overlap\": 22}}. start is seconds; the window is the shot length; vocals (sound card 1 only) is the vocal stem, cut to the same window; fill is what happens when the window runs past the end (silence or loop); settings.overlap is the node's Overlap row (an old save without it takes sound card 1's overlap).",
                 }),
                 "seconds": ("FLOAT", {
                     "forceInput": True,
-                    "tooltip": "The shot length in seconds. Wired, it sets the song window's duration, so the song always matches the shot; the window then only moves. Unwired, the duration on the sound card is used.",
+                    "tooltip": "The shot length in seconds, from Luna-H3-Canvas's seconds. Wired, it becomes `frames` at the shot's rate, rounded UP onto the Target's grid (5.0 s is 124 on H3; past 362 a warning, no cut), and the song window, the vocal stem and the clip cards by shot number follow it. Unwired, the shot length set on the node is used.",
                 }),
                 "shot": ("INT", {
                     "forceInput": True,
@@ -393,7 +463,7 @@ class LunaAssetLoader:
                     "tooltip": "Where in the song this shot starts, in seconds — from Luna-H3-ShotList, for scenes of different lengths. Wired, it wins over the sound card's Start and over 'By shot number'; the window's length still comes from seconds (or the card).",
                 }),
                 "chain": ("LUNA_H3_CHAIN", {
-                    "tooltip": "From Luna-H3-Chain: which clip of the chain this run makes. The sound card must be on 'By shot number'; its Start, Shot and overlap stay yours, and clip k plays segment Shot + k - 1. Wire this loader's overlap output to Luna-H3-ChainContinue, -ChainRemember and -ChainJoin.",
+                    "tooltip": "From Luna-H3-Chain: which clip of the chain this run makes. The sound card must be on 'By shot number'; its Start and Shot and the node's Overlap row stay yours, and clip k plays segment Shot + k - 1. Clip cards on 'By shot number' move the same way; a free clip card stays where it is. Wire this loader's overlap output to Luna-H3-ChainContinue, -ChainRemember and -ChainJoin.",
                 }),
             },
         }
@@ -413,14 +483,15 @@ class LunaAssetLoader:
                     m.update(fh.read())
         try:
             media = _parse_media(media_state)
-            cards = media["audio"] + media["video"]
+            files = [c["file"] for c in media["audio"] + media["video"]]
+            files += [c["vocals"] for c in media["audio"] if c.get("vocals")]
         except RuntimeError:
-            cards = []
-        for c in cards:
-            resolved = folder_paths.get_annotated_filepath(c["file"])
+            files = []
+        for name in files:
+            resolved = folder_paths.get_annotated_filepath(name)
             if resolved and os.path.isfile(resolved):
                 s = os.stat(resolved)
-                m.update(f"{c['file']}|{s.st_size}|{s.st_mtime_ns}".encode("utf-8"))
+                m.update(f"{name}|{s.st_size}|{s.st_mtime_ns}".encode("utf-8"))
         return m.hexdigest()
 
     @classmethod
@@ -433,35 +504,58 @@ class LunaAssetLoader:
 
     def load(self, image_paths, image_count, asset_state="", media_state="", seconds=None, shot=None,
              width=None, height=None, song_start=None, chain=None):
+        ui, outs = self._run(image_paths, image_count, asset_state, media_state, seconds, shot, width, height,
+                             song_start, chain)
+        return {"ui": ui, "result": tuple(outs[name] for name in self.RETURN_NAMES)}
+
+    def _run(self, image_paths, image_count, asset_state="", media_state="", seconds=None, shot=None,
+             width=None, height=None, song_start=None, chain=None):
+        """One run -> (ui, {output name: value}). Every output is made here, fps and vocals included,
+        so `load` only picks the declared sockets out by name."""
         paths = _split_paths(image_paths)
         media = _parse_media(media_state)
-        cards, clips = media["audio"], media["video"]
-        shot_len = shot_frames(seconds, media["shot_frames"])
-        # The `frames` output feeds H3's `length`, so it sits on the target's grid (17k+5 for H3): a typed
-        # 5.0 s is 120 frames, which H3 would not make. shot_len itself stays as asked; the song window does too.
-        out_frames = grid_frames(shot_len, target_grid(media["settings"]["target"]))
+        cards, clips, settings = media["audio"], media["video"], media["settings"]
+        target, overlap = settings["target"], settings["overlap"]
+        grid = target_grid(target)
+        # One shot rate per run: H3 24, LTX 25, General clip 1's delivered rate (24 with no clip).
+        probes = self._probe(clips)
+        rate = luna_units.fps_for(target, _delivered_fps(clips[0], probes[0], target) if clips else None)
+        # One count per run: `frames`, the brief, the timeline, the placements, the song and the clip cards.
+        shot_len = shot_frames(seconds, media["shot_frames"], target, rate)
+        shot_s = shot_len / rate
+        warnings = list(media["warnings"])
+        if luna_units.frames_warning(shot_len, grid):
+            warnings.append("The shot: " + luna_units.frames_warning(shot_len, grid))
         # The canvas size when BOTH are wired; else None (picture 1's size, or 0, is used).
         canvas = (int(width), int(height)) if width and height and int(width) > 0 and int(height) > 0 else None
         if not paths and not cards and not clips:
             # Not an error: a graph can run before any card is filled. Everything is empty,
             # the refs are well-formed (RefsOut and the brief rebuild cope), and the note says why.
-            print("[Luna-H3-AssetLoader] Nothing loaded: empty outputs. Press Upload and add pictures, "
-                  "clips or a song.")
-            refs = {"images": [], "videos": [], "video_audios": [], "audios": [], "width": 0, "height": 0,
-                    "brief": "Nothing loaded.", "song": None,
+            print(f"[{WHO}] Nothing loaded: empty outputs. Press Upload and add pictures, clips or a song.")
+            extra = [f"WARNING: {w}" for w in warnings]
+            for line in extra:
+                print(f"[{WHO}] {line}")
+            brief = " ".join(["Nothing loaded."] + extra)
+            refs = {"images": [], "roles": [], "videos": [], "video_audios": [], "audios": [], "width": 0,
+                    "height": 0, "brief": brief, "song": None, "vocals": None, "keyframes": [],
                     "items": {"images": [], "videos": [], "video_audios": [], "audios": [], "song": "",
-                              "extra": []},
+                              "vocals": "", "extra": extra},
                     "naming": make_naming(ROW)}
-            timeline = {"version": 2, "fps": FPS, "frames": shot_len, "items": []}
-            result = (None, canvas[0] if canvas else 0, canvas[1] if canvas else 0, "Nothing loaded.", None,
-                      refs, timeline, None, out_frames, 0) + (None,) * MAX_IMAGES
-            return {"ui": {"luna_asset_audio": []}, "result": result}
+            timeline = {"version": 2, "fps": rate, "frames": shot_len, "items": []}
+            outs = {"images": None, "width": canvas[0] if canvas else 0, "height": canvas[1] if canvas else 0,
+                    "asset_brief": brief, "audio": None, "refs": refs, "timeline": timeline, "video": None,
+                    "frames": shot_len, "overlap": overlap, "fps": rate, "vocals": None}
+            outs.update({f"image_{i + 1}": None for i in range(MAX_IMAGES)})
+            return {"luna_asset_audio": []}, outs
 
         # --- load everything -------------------------------------------------
-        audio, song, song_line = self._song(cards, seconds, shot, song_start, chain)
-        settings = media["settings"]
-        decoded = self._clips(clips, width, height, settings)
-        extra_sounds = self._sounds(cards)
+        audio, song, song_line = self._song(cards, shot_s, shot, song_start, chain, overlap, rate)
+        if song is not None:
+            song["wired"] = seconds is not None and float(seconds) > 0
+        vocals, vocals_line = self._vocals(cards, song)
+        starts = self._clip_starts(clips, shot_s, shot, chain, overlap, rate)
+        decoded = self._clips(clips, width, height, settings, probes, starts)
+        extra_sounds = self._sounds(cards, shot_s)
         frames, dims, originals = [], [], []
         if paths:
             states = _parse_state(asset_state, len(paths))
@@ -470,6 +564,17 @@ class LunaAssetLoader:
             originals = [o for _, o, _ in loaded]
             notes = [n for _, _, n in loaded]
             dims = [(int(f.shape[2]), int(f.shape[1])) for f in frames]  # (w, h) as delivered
+        # A clip at another rate than the shot's: on H3 and LTX it does not fit the shot. Nothing is resampled
+        # that the card did not ask for; the brief says so.
+        for k, (c, d) in enumerate(zip(clips, decoded), 1):
+            if d.get("warning"):
+                warnings.append(f"Clip V{k} ({c['file']}): {d['warning']}")
+            got = float(d["info"].get("fps", rate))
+            if abs(got - rate) > 1e-3:
+                warnings.append(
+                    f"Clip V{k} ({c['file']}) is delivered at {got:g} fps, not the shot's {rate:g} fps"
+                    + ({"h3": "; MiniMax H3 plays every clip at 24 fps, so it does not fit the shot.",
+                        "ltx": "; LTX plays it at 25 fps, so it does not fit the shot."}.get(target, ".")))
 
         # --- roles, tags, placements --------------------------------------------
         pic = [media["pictures"][i] if i < len(media["pictures"]) else {"role": "ref", "at": 0}
@@ -488,48 +593,50 @@ class LunaAssetLoader:
                    for k, (c, d) in enumerate(zip(clips, decoded)) if c["role"] == "guide"]
         placed += [(f"Sound A{j + 1} ({c['file']})", c["at"], 1)
                    for j, c in enumerate(cards) if c["role"] in ("guide", "lock")]
-        errors = check_placements(shot_len, placed, settings["target"])
+        errors = check_placements(shot_len, placed, target)
         if errors:
-            raise RuntimeError("[Luna-H3-AssetLoader] " + " ".join(errors) + " Drag it on the shot timeline.")
+            raise RuntimeError(f"[{WHO}] " + " ".join(errors) + " Drag it on the shot timeline.")
 
         # --- references for MiniMax H3 ---------------------------------------------
         ref_pics = [i for i, p in enumerate(pic) if p["role"] == "ref"]
         ref_clips = [k for k, c in enumerate(clips) if c["role"] == "ref"]
         ref_sounds = [j for j, c in enumerate(cards) if c["role"] == "ref"]
         refs = {"images": [frames[i] for i in ref_pics],
+                # One word per picture in `images`, Luna-ImageLoader's words: every Asset Loader picture sent is a
+                # reference (a keyframe is not sent; it is in `keyframes`).
+                "roles": ["reference"] * len(ref_pics),
                 "videos": [decoded[k]["batch"] for k in ref_clips],
                 "video_audios": [decoded[k]["sound"] for k in ref_clips],
                 "audios": [extra_sounds[j][0] for j in ref_sounds if extra_sounds.get(j)],
                 "width": dims[0][0] if dims else 0, "height": dims[0][1] if dims else 0,
-                # The song window, so Luna-H3-RefsOut can hand it on (its `audio` output).
+                # The song window, so Luna-H3-RefsOut can hand it on (its `audio` output), and its vocal stem.
                 "song": audio,
+                "vocals": vocals,
+                # The key pictures on the shot: picture card number (1-based), frame, picture.
+                "keyframes": [{"card": i + 1, "at": p["at"], "image": frames[i]}
+                              for i, p in enumerate(pic) if p["role"] == "key"],
                 # The @ names (luna_naming.make, row minimax): which tag each card gets, or None when it is not sent.
                 "naming": naming}
         # One description per item WITHOUT its <Tag>, per category. Luna-H3-RefsOut rebuilds the
         # brief from these with fresh numbering when it switches a category off (a clip sound
         # off moves the standalone sounds down a number), so the tags cannot be baked in here.
         items = {"images": [], "videos": [], "video_audios": [decoded[k]["sound"] is not None for k in ref_clips],
-                 "audios": [], "song": song_line or "", "extra": []}
+                 "audios": [], "song": song_line or "", "vocals": vocals_line or "", "extra": []}
 
-        # --- the brief ---------------------------------------------------------------
-        parts = []
-        if ref_pics:
-            lines = []
-            for i in ref_pics:
-                (w, h), (ow, oh) = dims[i], originals[i]
-                desc = _describe_ar(w, h)
-                if len(ref_pics) != len(paths):
-                    desc += f" (picture card {i + 1})"
-                if (w, h) != (ow, oh):
-                    # Say what it was as well as what it became. A prompt writer told
-                    # only the resized number cannot tell a deliberate crop from an
-                    # accident, and neither can you reading it back later.
-                    desc += f" [resized from {ow}x{oh}]"
-                if notes[i]:
-                    desc += f" [{notes[i]}]"
-                items["images"].append(desc)
-                lines.append(f"{tags['pictures'][i]} = {desc}")
-            parts.append("Reference images, in order: " + "; ".join(lines) + ".")
+        # --- the brief: luna_naming.inventory, the one text Luna-H3-RefsOut also writes -------------------------
+        for i in ref_pics:
+            (w, h), (ow, oh) = dims[i], originals[i]
+            desc = _describe_ar(w, h)
+            if len(ref_pics) != len(paths):
+                desc += f" (picture card {i + 1})"
+            if (w, h) != (ow, oh):
+                # Say what it was as well as what it became. A prompt writer told
+                # only the resized number cannot tell a deliberate crop from an
+                # accident, and neither can you reading it back later.
+                desc += f" [resized from {ow}x{oh}]"
+            if notes[i]:
+                desc += f" [{notes[i]}]"
+            items["images"].append(desc)
         # FL2VA forces both frames to the exact generation size — the first with
         # crop disabled, so a mismatched aspect is STRETCHED, and the last with a
         # centre crop, so it is CUT. Neither errors, so say it here or nobody
@@ -545,42 +652,31 @@ class LunaAssetLoader:
                         f"({_describe_ar(*dims[0])} vs {_describe_ar(*dims[1])}). Fine for "
                         f"REF2VA, which keeps each aspect. In FL2VA the first frame gets "
                         f"stretched and the last centre-cropped.")
-                print(f"[Luna-H3-AssetLoader] {warn}")
-                parts.append(warn)
+                print(f"[{WHO}] {warn}")
                 # Kept apart from "extra": it is about the pictures, so it goes when they are switched off.
                 items["picture_warning"] = warn
         for k in ref_clips:
-            items["videos"].append(decoded[k]["line"])
-            line = f"{tags['videos'][k]} = {decoded[k]['line']}"
-            if k in tags["video_audio"]:
-                line += f"; its sound is {tags['video_audio'][k]}"
-            elif clips[k]["sound"] == "keep":
-                line += "; it has no sound"
-            parts.append(line + ".")
+            line = decoded[k]["line"]
+            if clips[k]["sound"] == "keep" and decoded[k]["sound"] is None:
+                line += "; it has no sound"   # kept in the item, so Refs Out's brief says it too
+            items["videos"].append(line)
         for j in ref_sounds:
             if extra_sounds.get(j):
                 items["audios"].append(extra_sounds[j][1])
-                parts.append(f"{tags['sounds'][j]} = {extra_sounds[j][1]}.")
-        if refs["audios"] and not refs["images"] and not refs["videos"]:
-            parts.append("WARNING: MiniMax H3 does not accept reference sounds without a reference "
-                         "picture or clip.")
-        # Not kept in items: Luna-H3-RefsOut writes its own names line from refs["naming"] after its switches.
-        at_line = names_line(naming)
-        if at_line:
-            parts.append(at_line)
         on_shot = self._shot_lines(pic, clips, decoded, cards, song)
         if on_shot:
-            on_line = f"On the shot ({shot_len} frames, {shot_len / FPS:.2f} s): " + "; ".join(on_shot) + "."
-            parts.append(on_line)
-            items["extra"].append(on_line)
-        if song_line:
-            parts.append(song_line)
-        brief = " ".join(parts)
+            items["extra"].append(f"On the shot ({shot_len} frames, {shot_s:.2f} s): " + "; ".join(on_shot) + ".")
+        # The loaders' warnings stay in every brief, whatever Refs Out switches off.
+        for w in warnings:
+            print(f"[{WHO}] WARNING: {w}")
+            items["extra"].append(f"WARNING: {w}")
+        brief = inventory(items, naming, ROW)
         refs["brief"] = brief
         refs["items"] = items
-        print(f"[Luna-H3-AssetLoader] {brief}")
+        print(f"[{WHO}] {brief}")
 
-        timeline = self._timeline(shot_len, pic, frames, clips, decoded, cards, extra_sounds, audio, song)
+        timeline = self._timeline(shot_len, pic, frames, clips, decoded, cards, extra_sounds, audio, song,
+                                  fps=rate, vocals=vocals)
         numbered: list = [frames[i] if i < len(frames) else None for i in range(MAX_IMAGES)]
         if canvas:
             # The canvas size wins whenever it is wired: one source of truth for the size.
@@ -591,33 +687,70 @@ class LunaAssetLoader:
             # No pictures and nothing wired: a plain 0x0; `images` and image_N stay
             # empty (never black frames).
             w = h = 0
-            print("[Luna-H3-AssetLoader] No pictures loaded and no width/height wired: width and height are 0.")
-        video = decoded[0]["batch"] if decoded else None
-        overlap = int(cards[0]["overlap"]) if cards else 0
-        result = (conform(frames) if frames else None, w, h, brief, audio, refs, timeline, video,
-                  out_frames, overlap) + tuple(numbered)
-        return {"ui": {"luna_asset_audio": [song] if song else []}, "result": result}
+            print(f"[{WHO}] No pictures loaded and no width/height wired: width and height are 0.")
+        outs = {"images": conform(frames) if frames else None, "width": w, "height": h, "asset_brief": brief,
+                "audio": audio, "refs": refs, "timeline": timeline,
+                "video": decoded[0]["batch"] if decoded else None, "frames": shot_len, "overlap": overlap,
+                # The rate of the frames on `video` (clip 1, after its own fps choice and every-Nth), else the shot's.
+                "fps": float(decoded[0]["info"].get("fps", rate)) if decoded else float(rate),
+                "vocals": vocals}
+        outs.update({f"image_{i + 1}": numbered[i] for i in range(MAX_IMAGES)})
+        return {"luna_asset_audio": [song] if song else []}, outs
 
     @staticmethod
-    def _clips(clips, width, height, settings=None):
-        """Video cards -> [{"batch", "sound", "info", "line"}], in card order."""
+    def _probe(clips):
+        """Each clip card's file facts (probe_media), in card order; refuses a missing file or one without picture."""
+        out = []
+        for k, c in enumerate(clips, 1):
+            path = _media_file(c["file"])
+            if not path:
+                raise RuntimeError(f"[{WHO}] Clip not found in the input folder: {c['file']}")
+            info = probe_media(path)
+            if not info.get("video"):
+                raise RuntimeError(f"[{WHO}] {c['file']} has no picture, only sound.")
+            out.append(info)
+        return out
+
+    @staticmethod
+    def _clip_starts(clips, shot_s, shot=None, chain=None, overlap=DEFAULT_OVERLAP, rate=FPS):
+        """Where each clip card opens in its own file, in seconds. "free": its start. "shot": its start is shot 1's,
+        and shot n opens (n - 1) x (shot length - overlap / rate) later, as the song does; n is the card's shot plus
+        the chain's clip (Luna-H3-Chain), else the wired `shot`, else the card's shot."""
+        out = []
+        for k, c in enumerate(clips, 1):
+            if c.get("position") != "shot":
+                out.append(c["start"])
+                continue
+            if chain is not None:
+                n = c["shot"] + int(chain["clip"])
+            else:
+                n = int(shot) if shot is not None and int(shot) > 0 else c["shot"]
+            try:
+                out.append(song_shot_start(c["start"], n, shot_s, overlap, rate))
+            except ValueError as e:
+                raise RuntimeError(f"[{WHO}] Clip V{k} ({c['file']}): {e} Lower the overlap.") from None
+        return out
+
+    @staticmethod
+    def _clips(clips, width, height, settings=None, probes=None, starts=None):
+        """Video cards -> [{"batch", "sound", "info", "line"}], in card order. probes: _probe's facts (made here
+        when None); starts: where each card opens (_clip_starts; each card's own start when None)."""
         out = []
         settings = settings or {"target": "h3", "memory_gb": MEMORY_CAP / 1024 ** 3}
         cap, grid_t = settings["memory_gb"] * 1024 ** 3, target_grid(settings["target"])
         box = (int(width), int(height)) if width and height and int(width) > 0 and int(height) > 0 else None
+        probes = probes if probes is not None else LunaAssetLoader._probe(clips)
         for k, c in enumerate(clips, 1):
             path = _media_file(c["file"])
             if not path:
-                raise RuntimeError(f"[Luna-H3-AssetLoader] Clip not found in the input folder: {c['file']}")
+                raise RuntimeError(f"[{WHO}] Clip not found in the input folder: {c['file']}")
             grid = grid_t if c["count"] == "target" else "free"
             bad = thinning_error("target" if grid != "free" else "free", c["nth"])
             if bad:
-                raise RuntimeError(f"[Luna-H3-AssetLoader] Clip V{k} ({c['file']}): {bad}")
-            info = probe_media(path)
-            if not info.get("video"):
-                raise RuntimeError(f"[Luna-H3-AssetLoader] {c['file']} has no picture, only sound.")
-            fps = (target_fps(settings["target"], info["fps"]) if c["fps"] == "target"
-                   else (info["fps"] or FPS) if c["fps"] == "source" else c["fps"])
+                raise RuntimeError(f"[{WHO}] Clip V{k} ({c['file']}): {bad}")
+            info = probes[k - 1]
+            fps = _card_fps(c, info, settings["target"])
+            # The card's length, rounded UP onto the grid (no 362 cut); a file that ends first is cut down.
             frames = grid_frames(c["frames"], grid)
             if c["size"] == "canvas" and box:
                 size, (ow, oh) = ("box", box[0], box[1]), box
@@ -631,11 +764,12 @@ class LunaAssetLoader:
             cost = clip_bytes(-(-frames // c["nth"]), ow, oh, c["precision"])
             if cost > cap:
                 raise RuntimeError(
-                    f"[Luna-H3-AssetLoader] Clip V{k} ({c['file']}) would need {cost / 1024 ** 3:.1f} GB as "
-                    f"{frames} frames at {ow}x{oh} {c['precision']} — more than the {cap / 1024 ** 3:g} GB "
-                    f"this node allows (⚙ Memory cap). Shorten it, use fp16 or a smaller size, or raise the cap"
-                    + ("." if grid != "free" else ", or take every 2nd frame."))
-            batch, got = decode_clip(path, c["start"], frames, fps, size, c["fit"], c["nth"], c["precision"], grid)
+                    f"[{WHO}] Clip V{k} ({c['file']}) would need {cost / 1024 ** 3:.1f} GB as "
+                    f"{frames} frames at {ow}x{oh} {c['precision']}, more than the {cap / 1024 ** 3:g} GB "
+                    f"this node allows (the Memory cap setting). Shorten it, use fp16 or a smaller size, or raise "
+                    f"the cap" + ("." if grid != "free" else ", or take every 2nd frame."))
+            start = starts[k - 1] if starts is not None else c["start"]
+            batch, got = decode_clip(path, start, frames, fps, size, c["fit"], c["nth"], c["precision"], grid, who=WHO)
             sound = clip_soundtrack(path, got["start"], got["seconds"]) if c["sound"] == "keep" else None
             line = (f"{got['name']} from {_clock(got['start'])}, {got['frames']} frames "
                     f"({got['seconds']:.2f} s) at {got['fps']:g} fps, {got['width']}x{got['height']}")
@@ -643,86 +777,105 @@ class LunaAssetLoader:
             line += f" (from {got['source_size'][0]}x{got['source_size'][1]} at {got['source_fps']:g} fps, {how})"
             if got["short"]:
                 line += f"; the clip ran out, so {got['frames'] * got['nth']} of the {frames} frames asked for"
-            out.append({"batch": batch, "sound": sound, "info": got, "line": line})
+            # The card's own count, as H3 receives it: past 362 a warning (luna_units), never a cut. _run puts it in
+            # the console and the brief's extra lines, so Refs Out keeps it.
+            warning = luna_units.frames_warning(int(batch.shape[0]), "h3") if grid_t == "h3" else ""
+            out.append({"batch": batch, "sound": sound, "info": got, "line": line, "warning": warning})
         return out
 
     @staticmethod
-    def _song(cards, seconds, shot=None, song_start=None, chain=None):
+    def _song(cards, shot_s, shot=None, song_start=None, chain=None, overlap=None, rate=FPS):
         """Sound card 1 -> (AUDIO or None, info dict or None, one brief line).
 
-        A wired song_start (Luna-H3-ShotList) places the window itself; the card's own
-        start and its shot-number mode then stand aside. A wired chain (Luna-H3-Chain)
-        moves the card's own shot on by the clip number; the card's Start and overlap stay."""
+        The window is exactly the shot length, shot_s = frames / the shot's rate (one count per run). A wired
+        song_start (Luna-H3-ShotList) places the window itself; the card's own start and its shot-number mode then
+        stand aside. A wired chain (Luna-H3-Chain) moves the card's own shot on by the clip number; the card's Start
+        stays. overlap: the node's overlap in frames (None = the card's own, from saves before the node setting);
+        shot n starts (n - 1) x (shot_s - overlap / rate) after shot 1."""
         if chain is not None:
             if not cards:
-                raise RuntimeError("[Luna-H3-AssetLoader] chain is wired but no song is loaded: add the song on "
+                raise RuntimeError(f"[{WHO}] chain is wired but no song is loaded: add the song on "
                                    "sound card 1 and set its Position to 'By shot number'.")
             if cards[0]["position"] != "shot" or song_start is not None:
-                raise RuntimeError("[Luna-H3-AssetLoader] chain is wired: set sound card 1's Position to 'By shot "
-                                   "number' and leave song_start unwired, so the card's Start, Shot and overlap "
-                                   "place every clip.")
+                raise RuntimeError(f"[{WHO}] chain is wired: set sound card 1's Position to 'By shot "
+                                   "number' and leave song_start unwired, so the card's Start, Shot and the "
+                                   "node's overlap place every clip.")
             shot = cards[0]["shot"] + int(chain["clip"])
         if not cards:
             return None, None, ""
         c = cards[0]
+        ov = int(c["overlap"] if overlap is None else overlap)
         path = _media_file(c["file"])
         if not path:
-            raise RuntimeError(f"[Luna-H3-AssetLoader] Song not found in the input folder: {c['file']}")
-        wired = seconds is not None and float(seconds) > 0
-        want = float(seconds) if wired else c["duration"]
+            raise RuntimeError(f"[{WHO}] Song not found in the input folder: {c['file']}")
+        want = float(shot_s)
+        if want <= 0:
+            raise RuntimeError(f"[{WHO}] The shot has no length: wire `seconds` or set the shot length.")
         start, describe, n = c["start"], None, None
         placed = song_start is not None
         if placed:
             start = max(0.0, float(song_start))
-            if want <= 0:
-                raise RuntimeError(
-                    "[Luna-H3-AssetLoader] song_start is wired but the shot has no length: wire "
-                    "`seconds` too, or give the sound card a Duration.")
 
             def describe(total_s):
-                return (f"[Luna-H3-AssetLoader] song_start puts this shot at {_clock(start)}, after "
+                return (f"[{WHO}] song_start puts this shot at {_clock(start)}, after "
                         f"{c['file']} ends ({_clock(total_s)}). Check the scene's start in the shot list.")
         elif c["position"] == "shot":
-            if want <= 0:
-                raise RuntimeError(
-                    "[Luna-H3-AssetLoader] 'By shot number' needs a shot length: wire `seconds` "
-                    "or give the sound card a Duration.")
             n = int(shot) if shot is not None and int(shot) > 0 else c["shot"]
             try:
-                start = song_shot_start(c["song_start"], n, want, c["overlap"])
+                start = song_shot_start(c["song_start"], n, want, ov, rate)
             except ValueError as e:
-                raise RuntimeError(f"[Luna-H3-AssetLoader] {e} Lower the overlap.") from None
+                raise RuntimeError(f"[{WHO}] {e} Lower the overlap.") from None
 
             def describe(total_s, _n=n):
-                count = song_shot_count(total_s, c["song_start"], want, c["overlap"])
-                return (f"[Luna-H3-AssetLoader] Shot {_n} would start at {_clock(start)}, after "
+                count = song_shot_count(total_s, c["song_start"], want, ov, rate)
+                return (f"[{WHO}] Shot {_n} would start at {_clock(start)}, after "
                         f"{c['file']} ends ({_clock(total_s)}). This song has {count} shot(s) of "
-                        f"{want:.2f} s with a {c['overlap']}-frame overlap, starting at "
+                        f"{want:.2f} s with a {ov}-frame overlap, starting at "
                         f"{_clock(c['song_start'])}.")
-        audio, info = load_audio_window(path, start, want, c["fill"], describe)
-        info["wired"] = wired
+        audio, info = load_audio_window(path, start, want, c["fill"], describe, who=WHO)
         info["start_wired"] = placed
         line = (f"Song: {info['name']} {_clock(info['start'])}-{_clock(info['start'] + info['seconds'])} "
                 f"({info['seconds']:.2f} s{', placed by song_start' if placed else ''}).")
         if n is not None:
             info["shot"] = n
-            info["shots"] = song_shot_count(info["total"], c["song_start"], want, c["overlap"])
-            info["overlap"] = c["overlap"]
+            info["shots"] = song_shot_count(info["total"], c["song_start"], want, ov, rate)
+            info["overlap"] = ov
             line = (f"Song: {info['name']}, shot {n} of {info['shots']}, "
                     f"{_clock(info['start'])}-{_clock(info['start'] + info['seconds'])} "
                     f"({info['seconds']:.2f} s"
-                    + (f", sharing its first {c['overlap']} frames with shot {n - 1}" if n > 1 and c["overlap"] else "")
+                    + (f", sharing its first {ov} frames with shot {n - 1}" if n > 1 and ov else "")
                     + ").")
         if info["filled"] > 0.0005:
             line += (f" The file ran out after {info['taken']:.2f} s; the last {info['filled']:.2f} s "
                      f"{'loop back to its start' if info['mode'] == 'loop' else 'are silence'}.")
-            print(f"[Luna-H3-AssetLoader] {line}")
+            print(f"[{WHO}] {line}")
+        # Its job (SPEC § 2). No <Audio n>: the number depends on the ref_audio socket it is wired to.
+        line += (" The full mix: for the saved video, and H3's reference sound"
+                 + (" for everything but the lip sync, which takes the vocal stem." if c.get("vocals") else "."))
         return audio, info, line
 
     @staticmethod
-    def _sounds(cards):
+    def _vocals(cards, song):
+        """Sound card 1's vocal stem -> (AUDIO or None, one brief line or ""): the song's window exactly (same
+        start, same length, same fill), for H3's lip-sync lock."""
+        if not cards or not cards[0].get("vocals") or not song:
+            return None, ""
+        c = cards[0]
+        path = _media_file(c["vocals"])
+        if not path:
+            raise RuntimeError(f"[{WHO}] Vocal stem not found in the input folder: {c['vocals']}")
+        audio, info = load_audio_window(path, song["start"], song["seconds"], c["fill"], None, who=WHO)
+        line = (f"Vocal stem: {info['name']} {_clock(info['start'])}-{_clock(info['start'] + info['seconds'])} "
+                f"({info['seconds']:.2f} s), the song's window: the vocal stem of the song, for the lip-sync lock.")
+        if info["filled"] > 0.0005:
+            line += (f" The stem ran out after {info['taken']:.2f} s; the last {info['filled']:.2f} s "
+                     f"{'loop back to its start' if info['mode'] == 'loop' else 'are silence'}.")
+        return audio, line
+
+    @staticmethod
+    def _sounds(cards, shot_s=None):
         """Sound cards 2-3 that are references or guides -> {index: (AUDIO, description)}.
-        Cut to their window, never filled: a reference ends where it ends."""
+        Cut to their window, never filled: a reference ends where it ends, and at most at the shot's end (shot_s)."""
         out = {}
         for j, c in enumerate(cards):
             # Sound 1 as a guide or locked uses the song window (`audio`); as a
@@ -731,8 +884,11 @@ class LunaAssetLoader:
                 continue
             path = _media_file(c["file"])
             if not path:
-                raise RuntimeError(f"[Luna-H3-AssetLoader] Sound not found in the input folder: {c['file']}")
-            clip, info = load_audio(path, c["start"], c["duration"])
+                raise RuntimeError(f"[{WHO}] Sound not found in the input folder: {c['file']}")
+            want = c["duration"]
+            if shot_s:
+                want = float(shot_s) if want <= 0 else min(want, float(shot_s))
+            clip, info = load_audio(path, c["start"], want, who=WHO)
             out[j] = (clip, f"{info['name']} {_clock(info['start'])}-{_clock(info['start'] + info['seconds'])} "
                             f"({info['seconds']:.2f} s)")
         return out
@@ -751,15 +907,16 @@ class LunaAssetLoader:
                                       + (" with its sound" if d["sound"] is not None else "")))
         for j, c in enumerate(cards):
             if c["role"] == "lock":
-                rows.append((c["at"], f"from frame {c['at']}: sound A{j + 1} locked — the picture follows it"))
+                rows.append((c["at"], f"from frame {c['at']}: sound A{j + 1} locked: the picture follows it"))
             elif c["role"] == "guide":
                 rows.append((c["at"], f"from frame {c['at']}: sound A{j + 1} as a guide"))
         return [text for _, text in sorted(rows, key=lambda r: r[0])]
 
     @staticmethod
-    def _timeline(shot_len, pic, frames, clips, decoded, cards, extra_sounds, audio, song):
+    def _timeline(shot_len, pic, frames, clips, decoded, cards, extra_sounds, audio, song, fps=FPS, vocals=None):
         """Everything placed on the shot, with its frames/sound attached, for a node
-        that applies it (guides, the locked song). Frames are at H3's 24 fps."""
+        that applies it (guides, the locked song). Frames are at the shot's rate `fps` (H3 24, LTX 25). The song's
+        lock or guide item also carries `vocals`, the vocal stem for the lip sync, when sound card 1 has one."""
         items = []
         for i, p in enumerate(pic):
             if p["role"] == "key":
@@ -773,13 +930,15 @@ class LunaAssetLoader:
                 continue
             item = {"kind": "audio", "role": c["role"], "card": j + 1, "at": c["at"], "file": c["file"],
                     "audio": audio if j == 0 else extra_sounds[j][0]}
+            if j == 0 and vocals is not None:
+                item["vocals"] = vocals
             if j == 0 and song:
                 item.update({"start": round(song["start"], 4), "seconds": round(song["seconds"], 4)})
                 if song.get("shot") is not None:
                     item.update({"shot": song["shot"], "shots": song["shots"], "overlap_frames": song["overlap"]})
             items.append(item)
         items.sort(key=lambda it: it["at"])
-        return {"version": 2, "fps": FPS, "frames": shot_len, "items": items}
+        return {"version": 2, "fps": fps, "frames": shot_len, "items": items}
 
 
 def _inside(root_dir: str, rel: str, kind: str = "file"):
