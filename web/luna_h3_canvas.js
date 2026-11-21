@@ -134,13 +134,15 @@ function resolve(node) {
         : 1;
     const seconds = length / FPS;
 
+    // The same notes as h3_canvas.py's `info`, shortened for the face; one per line (drawReadout).
     const notes = [];
     // Half a grid step — see h3_canvas.py. Below that the snap is unavoidable and
     // the main line already shows the real duration.
-    if (Math.abs(seconds - asked) >= FRAME_GRID / FPS / 2) notes.push(`asked ${asked}s`);
-    if (length < TRAINED_MIN || length > TRAINED_MAX) notes.push("outside trained range");
+    if (Math.abs(seconds - asked) >= FRAME_GRID / FPS / 2) notes.push(`asked ${asked}s, grid gives ${seconds.toFixed(2)}s`);
+    if (length < TRAINED_MIN) notes.push(`below the trained ${TRAINED_MIN}-${TRAINED_MAX} frames`);
+    if (length > TRAINED_MAX) notes.push(`past the ${TRAINED_MAX} trained frames: kept, not cut`);
     if (width * height > MAX_PIXELS) {
-        notes.push(`${(width * height / MAX_PIXELS).toFixed(2)}x default canvas`);
+        notes.push(`${(width * height / MAX_PIXELS).toFixed(2)}x the default canvas`);
     }
     if (width % LATENT_MULTIPLE || height % LATENT_MULTIPLE) {
         const floor = (v) => Math.floor(v / LATENT_MULTIPLE) * LATENT_MULTIPLE;
@@ -200,6 +202,12 @@ function syncWidgets(node) {
     node.setDirtyCanvas(true, true);
 }
 
+// The readout panel: two lines, then one line per note (the first note's baseline at +63, the panel
+// ending 11 px below the last one). The widget reserves 8 px more than the panel.
+const NOTE_LINE = 16;
+const readoutPanelHeight = (notes) => (notes ? 74 + NOTE_LINE * (notes - 1) : 56);
+const readoutWidgetHeight = (notes) => readoutPanelHeight(notes) + 8;
+
 function drawReadout(ctx, node, width, y) {
     const r = resolve(node);
     const pad = 10;
@@ -208,7 +216,7 @@ function drawReadout(ctx, node, width, y) {
     // not always the node's, and trusting it drew the panel off the side of the node.
     const outer = Number(node?.size?.[0]) || Number(width) || 240;
     const w = Math.max(120, outer - x * 2);
-    const h = r.notes.length ? 74 : 56;
+    const h = readoutPanelHeight(r.notes.length);
 
     // save() must be paired with restore() even if something below throws, or every
     // node drawn after this one inherits our fill style, font and path.
@@ -244,11 +252,10 @@ function drawReadout(ctx, node, width, y) {
     const rate = r.factor > 1 ? `${FPS} → ${r.outputFps} fps` : `${FPS} fps`;
     ctx.fillText(`${r.length} frames  ${r.seconds.toFixed(2)}s  ${rate}`, x + pad, y + 44);
 
-    if (r.notes.length) {
-        ctx.fillStyle = LUNA.danger;
-        ctx.font = "11px sans-serif";
-        ctx.fillText(r.notes.join("   "), x + pad, y + 63);
-    }
+    // One note per line: joined on one line they ran past the panel and were cut off.
+    ctx.fillStyle = LUNA.danger;
+    ctx.font = "11px sans-serif";
+    r.notes.forEach((note, i) => ctx.fillText(note, x + pad, y + 63 + NOTE_LINE * i));
     } finally {
         ctx.restore();
     }
@@ -290,7 +297,7 @@ app.registerExtension({
                 value: null,
                 options: { serialize: false },
                 computeSize() {
-                    return [0, guard("computeSize", () => (resolve(node).notes.length ? 82 : 64), 64)];
+                    return [0, guard("computeSize", () => readoutWidgetHeight(resolve(node).notes.length), 64)];
                 },
                 draw(ctx, _node, widgetWidth, widgetY) {
                     guard("draw", () => drawReadout(ctx, node, widgetWidth, widgetY), undefined);
